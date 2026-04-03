@@ -110,17 +110,31 @@ async function run() {
 
     // ── Poll loop: org agents dispatch to background, so we keep ────────
     // asking until the sub-agent finishes and produces real output.
+    // Use broad patterns — the model varies its wording each time.
     const POLL_PHRASES = [
       "running in the background",
+      "is still running",
       "is now running",
+      "still in progress",
+      "not finished",
+      "has not completed",
+      "hasn't completed",
+      "not yet complete",
       "is now analyzing",
       "will update you",
       "will notify you",
+      "will be automatically notified",
+      "as soon as it completes",
+      "when it completes",
       "check its status",
+      "check its progress",
+      "monitor its progress",
       "/tasks",
+      "background task",
+      "let me know if you need anything else in the meantime",
     ];
-    const MAX_POLLS = 60;
-    const POLL_DELAY = 10000; // 10s between polls
+    const MAX_POLLS = 120;
+    const POLL_DELAY = 15000; // 15s between polls
     let polls = 0;
     const deadline = Date.now() + timeout;
 
