@@ -1,34 +1,27 @@
-name: 'Call Custom Agents'
-description: 'Run a named GitHub Copilot SDK custom agent with a prompt'
-author: 'snsina-org'
+name: "Copilot Custom Agent"
+description: "Runs a Copilot custom agent via the Copilot SDK"
+author: "snsinahub"
 
 inputs:
-  agent-name:
-    description: 'Name of the custom agent to run (researcher, editor, security-auditor)'
-    required: true
   prompt:
-    description: 'The prompt to send to the agent'
+    description: "The prompt to send to the agent"
+    required: true
+  agent:
+    description: "The custom agent name (must match the .agent.md filename without extension)"
+    required: true
+    default: "repo-analyzer-mcp"
+  token:
+    description: "GitHub PAT with Copilot Requests permission"
     required: true
   model:
-    description: 'The model to use for the agent'
+    description: "AI model to use"
     required: false
-    default: 'gpt-4.1'
-  github-token:
-    description: 'GitHub token for authentication. When provided, takes priority over other authentication methods.'
-    required: false
+    default: "gpt-4.1"
 
 outputs:
   response:
-    description: 'The response returned by the agent'
+    description: "The agent response content"
 
 runs:
-  using: 'composite'
-  steps:
-    - name: Run agent
-      run: node ${{ github.action_path }}/dist/index.mjs
-      shell: bash
-      env:
-        INPUT_AGENT-NAME: ${{ inputs.agent-name }}
-        INPUT_PROMPT: ${{ inputs.prompt }}
-        INPUT_MODEL: ${{ inputs.model }}
-        INPUT_GITHUB-TOKEN: ${{ inputs.github-token }}
+  using: "node24"          # matches node-version in the workflow
+  main: "dist/index.mjs"

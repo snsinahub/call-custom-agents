@@ -1,158 +1,113 @@
-// src/run-agent.mjs
-// CLI usage:    node src/run-agent.mjs <agent-name> "<prompt>"
-// Action usage: set INPUT_AGENT-NAME, INPUT_PROMPT, INPUT_MODEL env vars
-
-import { fileURLToPath } from "url";
-import { CopilotClient } from "@github/copilot-sdk";
 import * as core from "@actions/core";
+import { CopilotClient } from "@github/copilot-sdk";
 
-// --- Define all known custom agents ---
-// Add or modify agents here to suit your use case.
-export const AGENTS = [
-  {
-    name: "researcher",
-    displayName: "Research Agent",
-    description: "Explores codebases and answers questions using read-only tools",
-    tools: ["grep", "glob", "view"],
-    prompt: "You are a research assistant. Analyze code and answer questions. Do not modify any files.",
-    infer: false,
-  },
-  {
-    name: "editor",
-    displayName: "Editor Agent",
-    description: "Makes targeted, minimal code changes",
-    tools: ["view", "edit", "bash"],
-    prompt: "You are a code editor. Make minimal, surgical changes to files as requested.",
-    infer: false,
-  },
-  {
-    name: "security-auditor",
-    displayName: "Security Auditor",
-    description: "Reviews code for security vulnerabilities and identifies potential issues",
-    tools: ["grep", "glob", "view"],
-    prompt: "You are a security expert. Identify potential vulnerabilities in code. Never modify files.",
-    infer: false,
-  },
-];
+async function run() {
+  // ── Read action inputs ──────────────────────────────────────────────────
+  const prompt    = core.getInput("prompt",  { required: true });
+  const agentName = core.getInput("agent",   { required: true });
+  const token     = core.getInput("token",   { required: true });
+  const model     = core.getInput("model",   { required: false }) || "gpt-4.1";
 
-// --- Find an agent by name ---
-export function findAgent(name) {
-  return AGENTS.find((a) => a.name === name) ?? null;
-}
+  core.info(`🚀 Starting Copilot agent: ${agentName}`);
+  core.info(`📝 Prompt: ${prompt}`);
 
-// --- Parse inputs (action env vars or CLI arguments) ---
-export function parseInputs(isGitHubActions) {
-  if (isGitHubActions) {
-    return {
-      agentName: core.getInput("agent-name", { required: true }),
-      userPrompt: core.getInput("prompt", { required: true }),
-      model: core.getInput("model") || "gpt-4.1",
-      githubToken: core.getInput("github-token") || undefined,
-    };
-  }
-  const [, , agentName, userPrompt] = process.argv;
-  return {
-    agentName,
-    userPrompt,
-    model: process.env.MODEL || "gpt-4.1",
-    githubToken: process.env.GITHUB_TOKEN || undefined,
-  };
-}
+  // ── Authenticate via env var (highest priority for CI/CD) ───────────────
+  // The SDK automatically reads COPILOT_GITHUB_TOKEN
+  process.env.COPILOT_GITHUB_TOKEN = token;
 
-// --- Main ---
-async function main() {
-  const isGitHubActions = process.env.GITHUB_ACTIONS === "true";
-  const { agentName, userPrompt, model, githubToken } = parseInputs(isGitHubActions);
-
-  if (!agentName || !userPrompt) {
-    const msg = 'Usage: node src/run-agent.mjs <agent-name> "<prompt>"';
-    if (isGitHubActions) {
-      core.setFailed(msg);
-    } else {
-      console.error(msg);
-      console.error("Available agents: researcher, editor, security-auditor");
-    }
-    process.exit(1);
-  }
-
-  const matchedAgent = findAgent(agentName);
-  if (!matchedAgent) {
-    const msg = `❌ Unknown agent: "${agentName}"\nAvailable agents: ${AGENTS.map((a) => a.name).join(", ")}`;
-    if (isGitHubActions) {
-      core.setFailed(msg);
-    } else {
-      console.error(msg);
-    }
-    process.exit(1);
-  }
+  const client = new CopilotClient();
+  await client.start();
 
   try {
-    const client = new CopilotClient({ githubToken });
-
+    // ── Mirror the repo-analyzer-mcp agent definition ───────────────────
     const session = await client.createSession({
       model,
-      customAgents: AGENTS,
+      customAgents: [
+        {
+          name: agentName,
+          displayName: "Repo Analyzer MCP",
+          description:
+            "Analyzes a repository for code patterns, dependencies, and structure. " +
+            "Generates a summary report and creates GitHub issues for any concerns found.",
+          tools: ["read", "search", "edit", "execute"],
+          prompt:
+            "You are a code analysis specialist. When assigned a task:\n" +
+            "1. Map the repository structure\n" +
+            "2. Analyze dependencies\n" +
+            "3. Identify code patterns and CI/CD configuration\n" +
+            "4. Run `mkdir -p reports` then write findings to `reports/repo-analysis.md` " +
+            "   including all required Mermaid diagrams\n" +
+            "5. Check for existing GitHub issues (github/list_issues) then create issues " +
+            "   for each new finding (github/create_issue)",
+
+          // GitHub MCP server — write access for issue creation
+          mcpServers: {
+            github: {
+              type: "http",
+              url: "https://api.githubcopilot.com/mcp/",
+              tools: ["*"],
+              headers: {
+                "X-MCP-Toolsets": "issues,repos,users,pull_requests",
+              },
+            },
+          },
+
+          // Disable auto-inference — always explicitly selected via `agent:`
+          infer: false,
+        },
+      ],
+
+      // Pre-select this agent from the first prompt
       agent: agentName,
+
+      // Auto-approve all tool use — required for non-interactive CI execution
       onPermissionRequest: async () => ({ kind: "approved" }),
     });
 
-    session.on("subagent.selected", (event) => {
-      console.log(`🎯 Agent selected: ${event.data.agentDisplayName}`);
-    });
-
-    session.on("subagent.started", (event) => {
-      console.log(`▶  Sub-agent started: ${event.data.agentDisplayName}`);
-    });
-
-    session.on("subagent.completed", (event) => {
-      console.log(`✅ Sub-agent completed: ${event.data.agentDisplayName}`);
-    });
-
-    session.on("subagent.failed", (event) => {
-      console.error(`❌ Sub-agent failed: ${event.data.agentDisplayName}`);
-      console.error(`   Error: ${event.data.error}`);
-    });
-
-    console.log(`\n🤖 Running agent: ${matchedAgent.displayName}`);
-    console.log(`📝 Prompt: ${userPrompt}\n`);
-
-    const response = await session.sendAndWait({ prompt: userPrompt });
-
-    if (!response?.data?.content) {
-      const msg = "❌ No response received from the agent.";
-      if (isGitHubActions) {
-        core.setFailed(msg);
-      } else {
-        console.error(msg);
+    // ── Subscribe to sub-agent lifecycle events ──────────────────────────
+    session.on((event) => {
+      switch (event.type) {
+        case "subagent.selected":
+          core.info(
+            `🎯 Agent selected: ${event.data.agentDisplayName} | ` +
+            `Tools: ${event.data.tools?.join(", ") ?? "all"}`
+          );
+          break;
+        case "subagent.started":
+          core.info(
+            `▶  Sub-agent started: ${event.data.agentDisplayName} ` +
+            `(${event.data.toolCallId})`
+          );
+          break;
+        case "subagent.completed":
+          core.info(`✅ Sub-agent completed: ${event.data.agentDisplayName}`);
+          break;
+        case "subagent.failed":
+          core.error(`❌ Sub-agent failed: ${event.data.agentDisplayName}`);
+          core.error(`   Reason: ${event.data.error}`);
+          break;
+        case "subagent.deselected":
+          core.info("↩  Agent deselected, returning to parent");
+          break;
       }
-      await client.stop();
-      process.exit(1);
-    }
+    });
 
-    const content = response.data.content;
+    // ── Send the prompt and wait for completion ──────────────────────────
+    const response = await session.sendAndWait({ prompt });
+    const content  = response?.data.content ?? "";
 
-    console.log("\n--- Response ---");
-    console.log(content);
+    core.info("\n--- Agent response ---");
+    core.info(content);
 
-    if (isGitHubActions) {
-      core.setOutput("response", content);
-    }
+    // Set action output
+    core.setOutput("response", content);
 
+  } finally {
     await client.stop();
-    process.exit(0);
-  } catch (err) {
-    const msg = `Fatal error: ${err.message ?? err}`;
-    if (isGitHubActions) {
-      core.setFailed(msg);
-    } else {
-      console.error(msg);
-    }
-    process.exit(1);
   }
 }
 
-// Only run when executed directly (not when imported by tests)
-const isMain = process.argv[1] === fileURLToPath(import.meta.url);
-if (isMain) {
-  main();
-}
+run().catch((err) => {
+  core.setFailed(`Action failed: ${err.message}`);
+  process.exit(1);
+});
