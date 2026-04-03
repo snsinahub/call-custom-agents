@@ -1,10 +1,50 @@
 # call-custom-agents
 
-A Node.js CLI tool that uses the [GitHub Copilot SDK](https://docs.github.com/en/copilot/how-tos/copilot-sdk/sdk-getting-started) to run a named custom agent with a prompt you supply on the command line.
+A Node.js CLI tool and [GitHub Action](https://docs.github.com/en/actions) that uses the [GitHub Copilot SDK](https://docs.github.com/en/copilot/how-tos/copilot-sdk/sdk-getting-started) to run a named custom agent with a prompt you supply.
 
 ---
 
-## Prerequisites
+## Using as a GitHub Action
+
+### Inputs
+
+| Name | Required | Default | Description |
+|------|----------|---------|-------------|
+| `agent-name` | ✅ | — | Name of the agent to run (`researcher`, `editor`, `security-auditor`) |
+| `prompt` | ✅ | — | The prompt to send to the agent |
+| `model` | ❌ | `gpt-4.1` | The model to use |
+
+### Outputs
+
+| Name | Description |
+|------|-------------|
+| `response` | The response returned by the agent |
+
+### Example workflow
+
+```yaml
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run security auditor
+        id: audit
+        uses: snsina-org/call-custom-agents@main
+        with:
+          agent-name: security-auditor
+          prompt: 'Are there any SQL injection risks in this codebase?'
+
+      - name: Print response
+        run: echo "${{ steps.audit.outputs.response }}"
+```
+
+---
+
+## Using as a CLI tool
+
+### Prerequisites
 
 | Requirement | Detail |
 |-------------|--------|
@@ -21,7 +61,7 @@ gh copilot --version  # verify
 
 ---
 
-## Installation
+### Installation
 
 ```bash
 git clone https://github.com/snsina-org/call-custom-agents
@@ -31,13 +71,13 @@ npm install
 
 ---
 
-## Usage
+### Usage
 
 ```bash
 node run-agent.mjs <agent-name> "<prompt>"
 ```
 
-### Examples
+#### Examples
 
 ```bash
 # Ask the researcher agent about authentication
@@ -68,7 +108,7 @@ Open `run-agent.mjs` and add an entry to the `AGENTS` array:
 
 ```js
 {
-  name: "my-agent",           // CLI identifier
+  name: "my-agent",           // identifier
   displayName: "My Agent",    // Human-readable name shown in logs
   description: "Does stuff",  // Short description of what the agent does
   tools: ["grep", "view"],    // Tools the agent is allowed to use
@@ -81,6 +121,14 @@ Then call it with:
 
 ```bash
 node run-agent.mjs my-agent "Do the thing"
+```
+
+Or in a workflow:
+
+```yaml
+with:
+  agent-name: my-agent
+  prompt: 'Do the thing'
 ```
 
 ---

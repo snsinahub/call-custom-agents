@@ -1,15 +1,32 @@
 // run-agent.mjs
-// Usage: node run-agent.mjs <agent-name> "<prompt>"
-// Example: node run-agent.mjs researcher "How does auth work?"
+// CLI usage:    node run-agent.mjs <agent-name> "<prompt>"
+// Action usage: set INPUT_AGENT-NAME, INPUT_PROMPT, INPUT_MODEL env vars
 
 import { CopilotClient } from "@github/copilot-sdk";
+import * as core from "@actions/core";
 
-// --- Parse CLI arguments ---
-const [, , agentName, userPrompt] = process.argv;
+const isGitHubActions = process.env.GITHUB_ACTIONS === "true";
+
+// --- Parse inputs (action env vars or CLI arguments) ---
+let agentName, userPrompt, model;
+
+if (isGitHubActions) {
+  agentName = core.getInput("agent-name", { required: true });
+  userPrompt = core.getInput("prompt", { required: true });
+  model = core.getInput("model") || "gpt-4.1";
+} else {
+  [, , agentName, userPrompt] = process.argv;
+  model = process.env.MODEL || "gpt-4.1";
+}
 
 if (!agentName || !userPrompt) {
-  console.error('Usage: node run-agent.mjs <agent-name> "<prompt>"');
-  console.error("Available agents: researcher, editor, security-auditor");
+  const msg = 'Usage: node run-agent.mjs <agent-name> "<prompt>"';
+  if (isGitHubActions) {
+    core.setFailed(msg);
+  } else {
+    console.error(msg);
+    console.error("Available agents: researcher, editor, security-auditor");
+  }
   process.exit(1);
 }
 
@@ -45,8 +62,12 @@ const AGENTS = [
 // --- Validate the requested agent exists ---
 const matchedAgent = AGENTS.find((a) => a.name === agentName);
 if (!matchedAgent) {
-  console.error(`❌ Unknown agent: "${agentName}"`);
-  console.error(`Available agents: ${AGENTS.map((a) => a.name).join(", ")}`);
+  const msg = `❌ Unknown agent: "${agentName}"\nAvailable agents: ${AGENTS.map((a) => a.name).join(", ")}`;
+  if (isGitHubActions) {
+    core.setFailed(msg);
+  } else {
+    console.error(msg);
+  }
   process.exit(1);
 }
 
@@ -55,7 +76,7 @@ try {
   const client = new CopilotClient();
 
   const session = await client.createSession({
-    model: "gpt-4.1",
+    model,
     customAgents: AGENTS,
     agent: agentName, // pre-select the named agent
     onPermissionRequest: async () => ({ kind: "approved" }),
@@ -85,17 +106,33 @@ try {
   const response = await session.sendAndWait({ prompt: userPrompt });
 
   if (!response?.data?.content) {
-    console.error("❌ No response received from the agent.");
+    const msg = "❌ No response received from the agent.";
+    if (isGitHubActions) {
+      core.setFailed(msg);
+    } else {
+      console.error(msg);
+    }
     await client.stop();
     process.exit(1);
   }
 
+  const content = response.data.content;
+
   console.log("\n--- Response ---");
-  console.log(response.data.content);
+  console.log(content);
+
+  if (isGitHubActions) {
+    core.setOutput("response", content);
+  }
 
   await client.stop();
   process.exit(0);
 } catch (err) {
-  console.error("Fatal error:", err.message ?? err);
+  const msg = `Fatal error: ${err.message ?? err}`;
+  if (isGitHubActions) {
+    core.setFailed(msg);
+  } else {
+    console.error(msg);
+  }
   process.exit(1);
 }
