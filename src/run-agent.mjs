@@ -1,40 +1,34 @@
 import * as core from "@actions/core";
 import { CopilotClient } from "@github/copilot-sdk";
 
-// ── Agent definition builder ────────────────────────────────────────────────
-export function buildAgentConfig(agentName) {
-  return {
-    name: agentName,
-    displayName: "Repo Analyzer MCP",
-    description:
-      "Analyzes a repository for code patterns, dependencies, and structure. " +
-      "Generates a summary report and creates GitHub issues for any concerns found.",
-    tools: ["read", "search", "edit", "execute"],
-    prompt:
-      "You are a code analysis specialist running in a CI pipeline. " +
-      "You MUST complete ALL work before responding. Do NOT say you will do something later " +
-      "or that work is running in the background. Perform every step synchronously:\n" +
-      "1. Map the repository structure using the available tools\n" +
-      "2. Analyze dependencies (package.json, requirements.txt, go.mod, etc.)\n" +
-      "3. Identify code patterns and CI/CD configuration\n" +
-      "4. Run `mkdir -p reports` then write findings to `reports/repo-analysis.md` " +
-      "   including all required Mermaid diagrams\n" +
-      "5. Check for existing GitHub issues (github/list_issues) then create issues " +
-      "   for each new finding (github/create_issue)\n" +
-      "6. Only after ALL steps are done, respond with a summary of what you did.",
-    mcpServers: {
-      github: {
-        type: "http",
-        url: "https://api.githubcopilot.com/mcp/",
-        tools: ["*"],
-        headers: {
-          "X-MCP-Toolsets": "issues,repos,users,pull_requests",
-        },
-      },
+// ── System instruction for the agent ────────────────────────────────────────
+export const SYSTEM_PROMPT =
+  "You are a code analysis specialist running in a non-interactive CI pipeline. " +
+  "You MUST complete ALL work in the current turn before responding. " +
+  "NEVER say work is running in the background. NEVER defer work to a later step. " +
+  "NEVER suggest /tasks or ask the user to check back. " +
+  "Do everything synchronously in this turn:\n" +
+  "1. Use tools to map the repository structure\n" +
+  "2. Analyze dependencies (package.json, requirements.txt, go.mod, etc.)\n" +
+  "3. Identify code patterns and CI/CD configuration\n" +
+  "4. Run `mkdir -p reports` then write findings to `reports/repo-analysis.md` " +
+  "   including Mermaid diagrams\n" +
+  "5. Check for existing GitHub issues (github/list_issues) then create issues " +
+  "   for each new finding (github/create_issue)\n" +
+  "6. Only after ALL steps are complete, respond with a summary of what you did " +
+  "   and the issues you created.";
+
+// ── MCP server config for GitHub API access ─────────────────────────────────
+export const MCP_SERVERS = {
+  github: {
+    type: "http",
+    url: "https://api.githubcopilot.com/mcp/",
+    tools: ["*"],
+    headers: {
+      "X-MCP-Toolsets": "issues,repos,users,pull_requests",
     },
-    infer: false,
-  };
-}
+  },
+};
 
 // ── Input parsing (works both in Actions and CLI mode) ──────────────────────
 export function parseInputs(isActions = true) {
@@ -45,6 +39,7 @@ export function parseInputs(isActions = true) {
       githubToken: core.getInput("token", { required: true }),
       model:      core.getInput("model",  { required: false }) || "gpt-4.1",
       timeout:    parseInt(core.getInput("timeout", { required: false }) || "600000", 10),
+      workingDirectory: process.env.GITHUB_WORKSPACE || process.cwd(),
     };
   }
   // CLI mode: node src/run-agent.mjs <agent> <prompt>
@@ -55,29 +50,37 @@ export function parseInputs(isActions = true) {
     githubToken: process.env.GITHUB_TOKEN,
     model:       process.env.MODEL || "gpt-4.1",
     timeout:     parseInt(process.env.TIMEOUT || "600000", 10),
+    workingDirectory: process.cwd(),
   };
 }
 
 async function run() {
   const isActions = !!process.env.GITHUB_ACTIONS;
-  const { userPrompt: prompt, agentName, githubToken: token, model, timeout } = parseInputs(isActions);
+  const { userPrompt, agentName, githubToken: token, model, timeout, workingDirectory } = parseInputs(isActions);
 
   core.info(`🚀 Starting Copilot agent: ${agentName}`);
-  core.info(`📝 Prompt: ${prompt}`);
+  core.info(`📝 Prompt: ${userPrompt}`);
+  core.info(`📂 Working directory: ${workingDirectory}`);
   core.info(`⏱  Timeout: ${timeout}ms`);
 
   // ── Authenticate via env var (highest priority for CI/CD) ───────────────
-  // The SDK automatically reads COPILOT_GITHUB_TOKEN
   process.env.COPILOT_GITHUB_TOKEN = token;
 
   const client = new CopilotClient();
   await client.start();
 
   try {
+    // Use systemMessage + workingDirectory instead of customAgents to avoid
+    // background task dispatch. The system prompt is appended to the SDK's
+    // default instructions so all work runs in the foreground turn.
     const session = await client.createSession({
       model,
-      customAgents: [buildAgentConfig(agentName)],
-      agent: agentName,
+      workingDirectory,
+      systemMessage: {
+        mode: "append",
+        content: SYSTEM_PROMPT,
+      },
+      mcpServers: MCP_SERVERS,
       onPermissionRequest: async () => ({ kind: "approved" }),
     });
 
@@ -129,7 +132,7 @@ async function run() {
 
     // ── Send the prompt and wait for completion ──────────────────────────
     core.info(`⏳ Waiting for agent to complete (timeout: ${timeout}ms)…`);
-    const response = await session.sendAndWait({ prompt }, timeout);
+    const response = await session.sendAndWait({ prompt: userPrompt }, timeout);
     const content  = response?.data.content ?? "";
 
     core.info("\n--- Agent response ---");

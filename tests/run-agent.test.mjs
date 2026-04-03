@@ -3,38 +3,34 @@
 
 import { test, describe, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { buildAgentConfig, parseInputs } from "../src/run-agent.mjs";
+import { SYSTEM_PROMPT, MCP_SERVERS, parseInputs } from "../src/run-agent.mjs";
 
-describe("buildAgentConfig()", () => {
-  test("returns config with the given agent name", () => {
-    const cfg = buildAgentConfig("my-agent");
-    assert.equal(cfg.name, "my-agent");
+describe("SYSTEM_PROMPT", () => {
+  test("is a non-empty string", () => {
+    assert.ok(typeof SYSTEM_PROMPT === "string");
+    assert.ok(SYSTEM_PROMPT.length > 0);
   });
 
-  test("has all required fields", () => {
-    const cfg = buildAgentConfig("test-agent");
-    const requiredFields = ["name", "displayName", "description", "tools", "prompt", "mcpServers"];
-    for (const field of requiredFields) {
-      assert.ok(field in cfg, `Missing field "${field}"`);
-      assert.ok(cfg[field] !== undefined && cfg[field] !== null, `Field "${field}" must not be empty`);
-    }
+  test("forbids background/deferred work", () => {
+    assert.ok(SYSTEM_PROMPT.includes("NEVER"));
+    assert.ok(SYSTEM_PROMPT.includes("background"));
   });
 
-  test("tools is a non-empty array", () => {
-    const cfg = buildAgentConfig("test-agent");
-    assert.ok(Array.isArray(cfg.tools));
-    assert.ok(cfg.tools.length > 0);
+  test("includes analysis steps", () => {
+    assert.ok(SYSTEM_PROMPT.includes("repository structure"));
+    assert.ok(SYSTEM_PROMPT.includes("dependencies"));
+    assert.ok(SYSTEM_PROMPT.includes("repo-analysis.md"));
+  });
+});
+
+describe("MCP_SERVERS", () => {
+  test("has github server", () => {
+    assert.ok(MCP_SERVERS.github);
+    assert.equal(MCP_SERVERS.github.type, "http");
   });
 
-  test("infer is disabled", () => {
-    const cfg = buildAgentConfig("test-agent");
-    assert.equal(cfg.infer, false);
-  });
-
-  test("mcpServers includes github server", () => {
-    const cfg = buildAgentConfig("test-agent");
-    assert.ok(cfg.mcpServers.github);
-    assert.equal(cfg.mcpServers.github.type, "http");
+  test("includes issue toolset", () => {
+    assert.ok(MCP_SERVERS.github.headers["X-MCP-Toolsets"].includes("issues"));
   });
 });
 
@@ -116,5 +112,11 @@ describe("parseInputs() — CLI mode", () => {
     process.env.TIMEOUT = "300000";
     const inputs = parseInputs(false);
     assert.equal(inputs.timeout, 300000);
+  });
+
+  test("sets workingDirectory to cwd in CLI mode", () => {
+    process.argv = ["node", "run-agent.mjs", "researcher", "Hello"];
+    const inputs = parseInputs(false);
+    assert.equal(inputs.workingDirectory, process.cwd());
   });
 });
