@@ -61,7 +61,8 @@ async function run() {
     const runningSubagents = new Set();  // toolCallIds currently running
     let totalStarted = 0;
     let totalCompleted = 0;
-    let lastActivityTime = Date.now();
+    let lastSubagentActivity = Date.now();  // only reset by sub-agent events
+    let sessionIsIdle = false;  // tracks session.idle state
     let subagentResultContent = "";  // Captures the sub-agent's actual output
 
     session.on((event) => {
@@ -76,7 +77,8 @@ async function run() {
           const id = event.data.toolCallId;
           runningSubagents.add(id);
           totalStarted++;
-          lastActivityTime = Date.now();
+          lastSubagentActivity = Date.now();
+          sessionIsIdle = false;  // new work started
           core.info(
             `▶  Sub-agent started: ${event.data.agentDisplayName} ` +
             `(${id}) [running: ${runningSubagents.size}, total: ${totalStarted}]`
@@ -87,7 +89,7 @@ async function run() {
           const id = event.data.toolCallId;
           runningSubagents.delete(id);
           totalCompleted++;
-          lastActivityTime = Date.now();
+          lastSubagentActivity = Date.now();
           core.info(
             `✅ Sub-agent completed: ${event.data.agentDisplayName} ` +
             `(${id}) [running: ${runningSubagents.size}, done: ${totalCompleted}/${totalStarted}]`
@@ -98,7 +100,7 @@ async function run() {
           const id = event.data.toolCallId;
           runningSubagents.delete(id);
           totalCompleted++;
-          lastActivityTime = Date.now();
+          lastSubagentActivity = Date.now();
           core.error(`❌ Sub-agent failed: ${event.data.agentDisplayName}`);
           core.error(`   Reason: ${event.data.error}`);
           break;
@@ -106,7 +108,9 @@ async function run() {
         case "assistant.message": {
           const msgContent = event.data.content ?? "";
           core.info(`💬 Assistant message received (${msgContent.length} chars)`);
-          lastActivityTime = Date.now();
+          // assistant.message resets timer — the model produces messages
+          // between phases during orchestration
+          lastSubagentActivity = Date.now();
           if (msgContent.length > subagentResultContent.length) {
             subagentResultContent = msgContent;
           }
@@ -116,10 +120,12 @@ async function run() {
         case "tool.execution_complete":
         case "permission.requested":
         case "permission.completed":
-          lastActivityTime = Date.now();
+          // Tool events logged but do NOT reset lastSubagentActivity.
+          // This prevents stuck tool loops from keeping the timer alive.
           core.info(`📡 Event: ${event.type}`);
           break;
         case "session.idle":
+          sessionIsIdle = true;
           core.info("⏸  Session idle");
           break;
         case "session.error":
@@ -141,15 +147,28 @@ async function run() {
     // Multi-phase agents fire multiple subagent.started/completed pairs.
     // We wait until: all started sub-agents have completed AND the session
     // has been stable (no new activity) for IDLE_STABILIZATION ms.
-    const POLL_DELAY = 5000;        // 5s between checks
-    const IDLE_STABILIZATION = 15000; // 15s of no activity = truly done
+    const POLL_DELAY = 5000;         // 5s between checks
+    const IDLE_STABILIZATION = 30000; // 30s of no activity = truly done
+    const STARTUP_TIMEOUT = 60000;   // 60s max to see first subagent.started
     const deadline = Date.now() + timeout;
+    const startTime = Date.now();
 
     while (Date.now() < deadline) {
       const allCompleted = totalStarted > 0 && runningSubagents.size === 0;
-      const idleTime = Date.now() - lastActivityTime;
+      const idleTime = Date.now() - lastSubagentActivity;
+      const elapsed = Date.now() - startTime;
 
-      if (allCompleted && idleTime >= IDLE_STABILIZATION) {
+      // Fail fast: if no sub-agent started within STARTUP_TIMEOUT, the
+      // agent was likely not found or the model didn't dispatch it.
+      if (totalStarted === 0 && elapsed >= STARTUP_TIMEOUT) {
+        throw new Error(
+          `No sub-agent started within ${STARTUP_TIMEOUT / 1000}s. ` +
+          `Agent "${agentName}" may not have been found or dispatched. ` +
+          `Check that the agent file exists in your org's .github-private/agents/ directory.`
+        );
+      }
+
+      if (allCompleted && sessionIsIdle && idleTime >= IDLE_STABILIZATION) {
         core.info(
           `🏁 All sub-agents done (${totalCompleted}/${totalStarted}) ` +
           `and idle for ${Math.round(idleTime / 1000)}s. Proceeding.`
@@ -159,7 +178,7 @@ async function run() {
 
       core.info(
         `⏳ Waiting… [running: ${runningSubagents.size}, done: ${totalCompleted}/${totalStarted}, ` +
-        `idle: ${Math.round(idleTime / 1000)}s, elapsed: ${Math.round((Date.now() - (deadline - timeout)) / 1000)}s]`
+        `idle: ${sessionIsIdle}, stableFor: ${Math.round(idleTime / 1000)}s, elapsed: ${Math.round((Date.now() - (deadline - timeout)) / 1000)}s]`
       );
       await new Promise((r) => setTimeout(r, POLL_DELAY));
     }
