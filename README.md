@@ -64,7 +64,7 @@ jobs:
 
       - name: Run repo analyzer
         id: analyze
-        uses: snsina-org/call-custom-agents@main
+        uses: snsinahub/call-custom-agents@main
         with:
           agent: repo-analyzer-mcp
           prompt: "Analyze this repository and create issues for any concerns"
@@ -122,7 +122,7 @@ Or immediately when `session.task_complete` fires.
 ### Installation
 
 ```bash
-git clone https://github.com/snsina-org/call-custom-agents
+git clone https://github.com/snsinahub/call-custom-agents
 cd call-custom-agents
 npm install
 ```
