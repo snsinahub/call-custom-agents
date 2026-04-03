@@ -51,12 +51,23 @@ async function run() {
   await client.start();
 
   try {
-    // Create session WITHOUT customAgents. The CLI discovers remote agents
-    // from .github-private/agents/ automatically. We invoke the remote
-    // agent via @mention in the prompt and wait for subagent.completed.
+    // Register the agent as an inline customAgent with the same name as
+    // the remote org agent. The CLI merges the remote definition (from
+    // .github-private/agents/) with this inline config. Using `agent:`
+    // pre-selects it so work runs inline, not as a background sub-agent.
+    // Per SDK docs: name + prompt are required; sendAndWait waits for
+    // session.idle which fires after all sub-agent work completes.
     const session = await client.createSession({
       model,
       workingDirectory,
+      customAgents: [{
+        name: agentName,
+        description: `Custom agent "${agentName}" invoked from CI`,
+        prompt: userPrompt,
+        tools: null,
+        infer: false,
+      }],
+      agent: agentName,
       systemMessage: {
         mode: "append",
         content: SYSTEM_PROMPT,
@@ -64,26 +75,9 @@ async function run() {
       onPermissionRequest: async () => ({ kind: "approved" }),
     });
 
-    // ── Track agent lifecycle ──────────────────────────────────────────
+    // ── Track events ───────────────────────────────────────────────────
     let discoveredAgents = null;
-    let lastAssistantContent = "";
 
-    // Promise that resolves when the sub-agent completes or the session
-    // becomes idle after the sub-agent finishes its work.
-    const { promise: agentDone, resolve: resolveAgent, reject: rejectAgent } =
-      Promise.withResolvers();
-
-    let subagentStarted = false;
-    let subagentCompleted = false;
-    let wrongAgentStarted = null;
-
-    const timeoutId = setTimeout(() => {
-      rejectAgent(new Error(
-        `Timeout after ${timeout}ms waiting for agent "${agentName}" to complete.`
-      ));
-    }, timeout);
-
-    // ── Subscribe to all session events for visibility ─────────────────
     session.on((event) => {
       switch (event.type) {
         case "session.custom_agents_updated":
@@ -99,49 +93,30 @@ async function run() {
             `Tools: ${event.data.tools?.join(", ") ?? "all"}`
           );
           break;
-        case "subagent.started": {
-          subagentStarted = true;
-          const startedName = event.data.agentName ?? event.data.agentDisplayName ?? "";
-          if (startedName.toLowerCase() !== agentName.toLowerCase() &&
-              !startedName.toLowerCase().includes(agentName.toLowerCase())) {
-            wrongAgentStarted = startedName;
-          }
+        case "subagent.started":
           core.info(
             `▶  Sub-agent started: ${event.data.agentDisplayName} ` +
             `(${event.data.toolCallId})`
           );
           break;
-        }
         case "subagent.completed":
-          subagentCompleted = true;
           core.info(`✅ Sub-agent completed: ${event.data.agentDisplayName}`);
           break;
         case "subagent.failed":
           core.error(`❌ Sub-agent failed: ${event.data.agentDisplayName}`);
           core.error(`   Reason: ${event.data.error}`);
-          rejectAgent(new Error(
-            `Sub-agent "${event.data.agentDisplayName}" failed: ${event.data.error}`
-          ));
           break;
         case "subagent.deselected":
           core.info("↩  Agent deselected, returning to parent");
           break;
         case "assistant.message":
-          lastAssistantContent = event.data.content ?? "";
-          core.info(`💬 Assistant message received (${lastAssistantContent.length} chars)`);
+          core.info(`💬 Assistant message received (${event.data.content?.length ?? 0} chars)`);
           break;
         case "session.idle":
-          core.info("⏸  Session idle");
-          // Only resolve when idle AFTER sub-agent completed (the main
-          // agent does a final turn to summarize sub-agent output, then
-          // goes idle). If no sub-agent was started, also resolve.
-          if (subagentCompleted || !subagentStarted) {
-            resolveAgent();
-          }
+          core.info("⏸  Session idle — all work complete");
           break;
         case "session.error":
           core.error(`🚨 Session error: ${event.data.message}`);
-          rejectAgent(new Error(`Session error: ${event.data.message}`));
           break;
         default:
           core.info(`📡 Event: ${event.type}`);
@@ -149,36 +124,14 @@ async function run() {
       }
     });
 
-    // ── Send prompt addressing the remote agent via @mention ────────────
-    const fullPrompt = `@${agentName} ${userPrompt}`;
-    core.info(`⏳ Sending prompt to @${agentName} (timeout: ${timeout}ms)…`);
-    await session.send({ prompt: fullPrompt });
-
-    // Wait for the agent to finish (subagent.completed + session.idle)
-    await agentDone;
-    clearTimeout(timeoutId);
-
-    const content = lastAssistantContent;
+    // ── Send prompt and wait for all work to finish ─────────────────────
+    core.info(`⏳ Sending prompt to ${agentName} (timeout: ${timeout}ms)…`);
+    const response = await session.sendAndWait({ prompt: userPrompt }, timeout);
+    const content = response?.data.content ?? "";
 
     // ── Validate ────────────────────────────────────────────────────────
-    const agentList = discoveredAgents?.agents ?? [];
-    const agentFound = agentList.some(
-      (a) => a.name === agentName || a.id === agentName
-    );
-    if (!agentFound && discoveredAgents) {
-      const available = agentList.map((a) => a.name).join(", ") || "none";
-      throw new Error(
-        `Agent "${agentName}" was NOT found in discovered agents. ` +
-        `Available agents: [${available}]. ` +
-        `Ensure the agent file exists in your org's .github-private/agents/ directory.`
-      );
-    }
-
-    if (wrongAgentStarted) {
-      throw new Error(
-        `Agent "${agentName}" was discovered but NOT activated. ` +
-        `The CLI fell back to built-in "${wrongAgentStarted}".`
-      );
+    if (!content) {
+      core.warning("⚠️  Agent returned empty response.");
     }
 
     // Detect "running in background" non-answers
