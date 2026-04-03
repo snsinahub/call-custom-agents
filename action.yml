@@ -21,12 +21,8 @@ outputs:
 runs:
   using: 'composite'
   steps:
-    - name: Install dependencies
-      run: npm install --prefix ${{ github.action_path }}
-      shell: bash
-
     - name: Run agent
-      run: node ${{ github.action_path }}/run-agent.mjs
+      run: node ${{ github.action_path }}/dist/index.mjs
       shell: bash
       env:
         INPUT_AGENT-NAME: ${{ inputs.agent-name }}

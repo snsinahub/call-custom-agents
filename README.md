@@ -4,6 +4,23 @@ A Node.js CLI tool and [GitHub Action](https://docs.github.com/en/actions) that 
 
 ---
 
+## Repository layout
+
+```
+call-custom-agents/
+├── src/
+│   └── run-agent.mjs      # Source — agent logic and exports
+├── tests/
+│   └── run-agent.test.mjs # Unit tests (Node built-in test runner)
+├── dist/
+│   └── index.mjs          # Bundled output — called by action.yml
+├── action.yml             # GitHub Action definition
+├── package.json
+└── .gitignore
+```
+
+---
+
 ## Using as a GitHub Action
 
 ### Inputs
@@ -40,6 +57,8 @@ jobs:
         run: echo "${{ steps.audit.outputs.response }}"
 ```
 
+> **Note:** The action runs the pre-built `dist/index.mjs` directly — no `npm install` is needed at runtime.
+
 ---
 
 ## Using as a CLI tool
@@ -74,20 +93,20 @@ npm install
 ### Usage
 
 ```bash
-node run-agent.mjs <agent-name> "<prompt>"
+node src/run-agent.mjs <agent-name> "<prompt>"
 ```
 
 #### Examples
 
 ```bash
 # Ask the researcher agent about authentication
-node run-agent.mjs researcher "How does auth work?"
+node src/run-agent.mjs researcher "How does auth work?"
 
 # Ask the editor agent to fix a bug
-node run-agent.mjs editor "Fix the null-check in src/utils.js"
+node src/run-agent.mjs editor "Fix the null-check in src/utils.js"
 
 # Ask the security auditor to review code
-node run-agent.mjs security-auditor "Are there any SQL injection risks?"
+node src/run-agent.mjs security-auditor "Are there any SQL injection risks?"
 ```
 
 ---
@@ -104,23 +123,31 @@ node run-agent.mjs security-auditor "Are there any SQL injection risks?"
 
 ## Adding Custom Agents
 
-Open `run-agent.mjs` and add an entry to the `AGENTS` array:
+Open `src/run-agent.mjs` and add an entry to the `AGENTS` array:
 
 ```js
 {
-  name: "my-agent",           // identifier
-  displayName: "My Agent",    // Human-readable name shown in logs
-  description: "Does stuff",  // Short description of what the agent does
-  tools: ["grep", "view"],    // Tools the agent is allowed to use
-  prompt: "System prompt…",   // Instructions given to the model
+  name: "my-agent",           // identifier used in CLI and action inputs
+  displayName: "My Agent",    // human-readable name shown in logs
+  description: "Does stuff",  // short description of what the agent does
+  tools: ["grep", "view"],    // tools the agent is allowed to use
+  prompt: "System prompt…",   // instructions given to the model
   infer: false,
 }
 ```
 
-Then call it with:
+After adding an agent, rebuild and commit `dist/`:
 
 ```bash
-node run-agent.mjs my-agent "Do the thing"
+npm run build
+git add dist/
+git commit -m "chore: rebuild dist"
+```
+
+Then call it:
+
+```bash
+node src/run-agent.mjs my-agent "Do the thing"
 ```
 
 Or in a workflow:
@@ -133,9 +160,36 @@ with:
 
 ---
 
-## npm Scripts
+## Development
 
-| Script | Command |
-|--------|---------|
-| `npm start` | `node run-agent.mjs` |
-| `npm run run-agent` | `node run-agent.mjs` |
+### Install dependencies
+
+```bash
+npm install
+```
+
+### Build
+
+Bundles `src/run-agent.mjs` into `dist/index.mjs` using [`@vercel/ncc`](https://github.com/vercel/ncc).
+The built file is committed to the repository so the action works without a runtime install step.
+
+```bash
+npm run build
+```
+
+### Test
+
+Runs unit tests with Node.js's built-in test runner (no extra framework needed).
+
+```bash
+npm test
+```
+
+### npm Scripts
+
+| Script | Command | Description |
+|--------|---------|-------------|
+| `npm start` | `node src/run-agent.mjs` | Run the agent CLI |
+| `npm run run-agent` | `node src/run-agent.mjs` | Alias for `npm start` |
+| `npm run build` | `ncc build src/run-agent.mjs -o dist --minify` | Bundle into `dist/` |
+| `npm test` | `node --test tests/run-agent.test.mjs` | Run unit tests |
