@@ -54,8 +54,9 @@ async function run() {
     // Create session pointing at the checked-out repo.
     // The CLI discovers custom agents from .agent.md / .agent.yaml files
     // (org-level agents from .github-private/agents/, repo-level from
-    // .github/agents/). The `agent` parameter selects which discovered
-    // agent to activate for the session.
+    // .github/agents/). Remote agents are selected by prefixing the
+    // prompt with @agent-name (the `agent` config param only works for
+    // inline customAgents, not remotely discovered ones).
     const session = await client.createSession({
       model,
       workingDirectory,
@@ -63,7 +64,6 @@ async function run() {
         mode: "append",
         content: SYSTEM_PROMPT,
       },
-      agent: agentName,
       onPermissionRequest: async () => ({ kind: "approved" }),
     });
 
@@ -133,26 +133,46 @@ async function run() {
       }
     });
 
-    // ── Send the prompt and wait for completion ──────────────────────────
-    core.info(`⏳ Waiting for agent to complete (timeout: ${timeout}ms)…`);
-    const response = await session.sendAndWait({ prompt: userPrompt }, timeout);
+    // ── Wait for agent discovery, then validate ────────────────────────
+    // Give the CLI time to discover remote agents (the
+    // session.custom_agents_updated event fires during session setup).
+    // We check after sendAndWait, but the event handler above already
+    // captured discoveredAgents by then.
+
+    // ── Send the prompt, addressing the agent with @mention ─────────────
+    const fullPrompt = `@${agentName} ${userPrompt}`;
+    core.info(`⏳ Sending prompt to @${agentName} (timeout: ${timeout}ms)…`);
+    const response = await session.sendAndWait({ prompt: fullPrompt }, timeout);
     const content  = response?.data.content ?? "";
 
     // ── Validate the correct agent actually ran ─────────────────────────
+    // Check if the agent was in the discovered list
+    const agentList = discoveredAgents?.agents ?? [];
+    const agentFound = agentList.some(
+      (a) => a.name === agentName || a.id === agentName
+    );
+    if (!agentFound && discoveredAgents) {
+      const available = agentList.map((a) => a.name).join(", ") || "none";
+      throw new Error(
+        `Agent "${agentName}" was NOT found in discovered agents. ` +
+        `Available agents: [${available}]. ` +
+        `Ensure the agent file exists in your org's .github-private/agents/ directory.`
+      );
+    }
+
     if (wrongAgentStarted) {
       throw new Error(
-        `Agent "${agentName}" was NOT found. The CLI fell back to built-in "${wrongAgentStarted}". ` +
-        `Ensure the agent file exists in your org's .github-private/agents/ directory ` +
-        `(e.g. agents/${agentName}.agent.md) and the token has access to discover it.`
+        `Agent "${agentName}" was discovered but NOT activated. ` +
+        `The CLI fell back to built-in "${wrongAgentStarted}". ` +
+        `This may be a Copilot SDK issue with remote agent selection.`
       );
     }
 
     // If the org agent defines MCP servers, session.mcp_servers_loaded fires.
-    // Its absence when expected is a strong signal the agent wasn't found.
     if (!mcpServersLoaded && !wrongAgentStarted) {
       core.warning(
         `⚠️  session.mcp_servers_loaded was NOT received. ` +
-        `Agent "${agentName}" may not have been discovered. ` +
+        `Agent "${agentName}" may not have been fully activated. ` +
         `If this agent defines MCP servers in its .agent.md, this indicates a problem.`
       );
     }
@@ -180,7 +200,12 @@ async function run() {
   }
 }
 
-run().catch((err) => {
-  core.setFailed(`Action failed: ${err.message}`);
-  process.exit(1);
-});
+// Only auto-run when executed directly (not when imported by tests)
+import { fileURLToPath } from "node:url";
+const __filename = fileURLToPath(import.meta.url);
+if (process.argv[1] === __filename) {
+  run().catch((err) => {
+    core.setFailed(`Action failed: ${err.message}`);
+    process.exit(1);
+  });
+}
