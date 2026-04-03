@@ -26,7 +26,7 @@ jobs:
             Create GitHub issues for each significant finding.
             Complete all analysis and issue creation before responding with a summary.
           token: ${{ secrets.COPILOT_TOKEN }}
-          model: gpt-4.1
+          model: claude-sonnet-4.6
           timeout: "600000"
 
       - name: Comment on PR

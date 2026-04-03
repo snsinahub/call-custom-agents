@@ -31,6 +31,7 @@ jobs:
             5. Create GitHub issues for each new finding
             6. Respond with a summary of everything you did
           token: ${{ secrets.COPILOT_TOKEN }}
+          model: claude-sonnet-4.6
           timeout: "600000"
           create-pr: "true"
           pr-title: "chore: weekly repo analysis"

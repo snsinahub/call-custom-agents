@@ -26,6 +26,7 @@ jobs:
           agent: repo-analyzer-mcp
           prompt: ${{ github.event.inputs.prompt }}
           token: ${{ secrets.COPILOT_TOKEN }}
+          model: claude-sonnet-4.6
           timeout: "600000"
           create-pr: "true"
           pr-title: "chore: repo analysis report"
