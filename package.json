@@ -1,6 +1,7 @@
 {
   "name": "call-custom-agents",
   "version": "1.0.0",
+  "license": "MIT",
   "description": "Run GitHub Copilot SDK custom agents from the command line",
   "engines": {
     "node": ">=18"
