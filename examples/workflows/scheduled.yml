@@ -22,13 +22,15 @@ jobs:
         with:
           agent: repo-analyzer-mcp
           prompt: |
-            Perform a full repository analysis:
+            Perform a full repository analysis. Complete ALL steps before responding:
             1. Map the repository structure
             2. Analyze dependencies for outdated or vulnerable packages
             3. Identify code patterns and potential improvements
             4. Write findings to reports/repo-analysis.md
             5. Create GitHub issues for each new finding
+            6. Respond with a summary of everything you did
           token: ${{ secrets.COPILOT_TOKEN }}
+          timeout: "600000"
 
       - name: Upload analysis report
         uses: actions/upload-artifact@v4

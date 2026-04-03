@@ -42,6 +42,7 @@ describe("parseInputs() — CLI mode", () => {
   const originalArgv = process.argv;
   const originalModel = process.env.MODEL;
   const originalGithubToken = process.env.GITHUB_TOKEN;
+  const originalTimeout = process.env.TIMEOUT;
 
   afterEach(() => {
     process.argv = originalArgv;
@@ -54,6 +55,11 @@ describe("parseInputs() — CLI mode", () => {
       delete process.env.GITHUB_TOKEN;
     } else {
       process.env.GITHUB_TOKEN = originalGithubToken;
+    }
+    if (originalTimeout === undefined) {
+      delete process.env.TIMEOUT;
+    } else {
+      process.env.TIMEOUT = originalTimeout;
     }
   });
 
@@ -96,5 +102,19 @@ describe("parseInputs() — CLI mode", () => {
     delete process.env.GITHUB_TOKEN;
     const inputs = parseInputs(false);
     assert.equal(inputs.githubToken, undefined);
+  });
+
+  test("defaults timeout to 600000ms", () => {
+    process.argv = ["node", "run-agent.mjs", "researcher", "Hello"];
+    delete process.env.TIMEOUT;
+    const inputs = parseInputs(false);
+    assert.equal(inputs.timeout, 600000);
+  });
+
+  test("reads TIMEOUT env var", () => {
+    process.argv = ["node", "run-agent.mjs", "researcher", "Hello"];
+    process.env.TIMEOUT = "300000";
+    const inputs = parseInputs(false);
+    assert.equal(inputs.timeout, 300000);
   });
 });

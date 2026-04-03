@@ -17,6 +17,10 @@ inputs:
     description: "AI model to use"
     required: false
     default: "gpt-4.1"
+  timeout:
+    description: "Timeout in milliseconds to wait for agent completion"
+    required: false
+    default: "600000"
 
 outputs:
   response:
@@ -43,4 +47,5 @@ runs:
         INPUT_AGENT: ${{ inputs.agent }}
         INPUT_TOKEN: ${{ inputs.token }}
         INPUT_MODEL: ${{ inputs.model }}
+        INPUT_TIMEOUT: ${{ inputs.timeout }}
       run: node src/run-agent.mjs

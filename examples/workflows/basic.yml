@@ -7,7 +7,7 @@ on:
       prompt:
         description: "Prompt to send to the agent"
         required: true
-        default: "Analyze this repository and summarize your findings"
+        default: "Analyze this repository structure, dependencies, and code patterns. Write a report to reports/repo-analysis.md and create GitHub issues for any concerns found. Complete all work before responding."
 
 jobs:
   analyze:
@@ -22,6 +22,7 @@ jobs:
           agent: repo-analyzer-mcp
           prompt: ${{ github.event.inputs.prompt }}
           token: ${{ secrets.COPILOT_TOKEN }}
+          timeout: "600000"
 
       - name: Print response
         run: echo "${{ steps.analyze.outputs.response }}"
