@@ -51,48 +51,26 @@ async function run() {
   await client.start();
 
   try {
-    // Register the agent as an inline customAgent with the same name as
-    // Register inline agent with same name as remote org agent. The CLI
-    // merges the remote definition (MCP servers, tools) when names match.
-    // IMPORTANT: customAgents[].prompt is a SYSTEM prompt, NOT the user
-    // message. It must contain actionable instructions so the model works
-    // inline instead of dispatching to a background sub-agent.
+    // Plain session — no customAgents, no agent pre-selection.
+    // Remote org agents always run as background sub-agents in the CLI.
+    // We handle this by polling: after the initial @mention dispatch,
+    // we keep asking for results until the sub-agent completes.
     const session = await client.createSession({
       model,
       workingDirectory,
-      customAgents: [{
-        name: agentName,
-        description: `Custom agent "${agentName}" invoked from CI`,
-        prompt:
-          "You are running in a non-interactive CI pipeline. " +
-          "Execute the task given by the user yourself, directly, using your available tools. " +
-          "Do NOT delegate to other agents or background tasks. " +
-          "Do NOT say work is running in background. " +
-          "Complete ALL work in this turn, then respond with a summary.",
-        tools: null,
-        infer: false,
-      }],
-      agent: agentName,
       onPermissionRequest: async () => ({ kind: "approved" }),
     });
 
     // ── Track events ───────────────────────────────────────────────────
-    let discoveredAgents = null;
+    let subagentDone = false;
 
     session.on((event) => {
       switch (event.type) {
         case "session.custom_agents_updated":
-          discoveredAgents = event.data;
           core.info(`📋 Custom agents discovered: ${JSON.stringify(event.data)}`);
           break;
         case "session.mcp_servers_loaded":
           core.info("🔌 MCP servers loaded");
-          break;
-        case "subagent.selected":
-          core.info(
-            `🎯 Agent selected: ${event.data.agentDisplayName} | ` +
-            `Tools: ${event.data.tools?.join(", ") ?? "all"}`
-          );
           break;
         case "subagent.started":
           core.info(
@@ -101,20 +79,19 @@ async function run() {
           );
           break;
         case "subagent.completed":
+          subagentDone = true;
           core.info(`✅ Sub-agent completed: ${event.data.agentDisplayName}`);
           break;
         case "subagent.failed":
+          subagentDone = true;
           core.error(`❌ Sub-agent failed: ${event.data.agentDisplayName}`);
           core.error(`   Reason: ${event.data.error}`);
-          break;
-        case "subagent.deselected":
-          core.info("↩  Agent deselected, returning to parent");
           break;
         case "assistant.message":
           core.info(`💬 Assistant message received (${event.data.content?.length ?? 0} chars)`);
           break;
         case "session.idle":
-          core.info("⏸  Session idle — all work complete");
+          core.info("⏸  Session idle");
           break;
         case "session.error":
           core.error(`🚨 Session error: ${event.data.message}`);
@@ -125,28 +102,54 @@ async function run() {
       }
     });
 
-    // ── Send prompt and wait for all work to finish ─────────────────────
-    core.info(`⏳ Sending prompt to ${agentName} (timeout: ${timeout}ms)…`);
-    const response = await session.sendAndWait({ prompt: userPrompt }, timeout);
-    const content = response?.data.content ?? "";
+    // ── Invoke the org agent via @mention ───────────────────────────────
+    const fullPrompt = `@${agentName} ${userPrompt}`;
+    core.info(`⏳ Sending prompt to @${agentName} (timeout: ${timeout}ms)…`);
+    let response = await session.sendAndWait({ prompt: fullPrompt }, timeout);
+    let content = response?.data.content ?? "";
 
-    // ── Validate ────────────────────────────────────────────────────────
-    if (!content) {
-      core.warning("⚠️  Agent returned empty response.");
+    // ── Poll loop: org agents dispatch to background, so we keep ────────
+    // asking until the sub-agent finishes and produces real output.
+    const POLL_PHRASES = [
+      "running in the background",
+      "is now running",
+      "is now analyzing",
+      "will update you",
+      "will notify you",
+      "check its status",
+      "/tasks",
+    ];
+    const MAX_POLLS = 60;
+    const POLL_DELAY = 10000; // 10s between polls
+    let polls = 0;
+    const deadline = Date.now() + timeout;
+
+    while (polls < MAX_POLLS && Date.now() < deadline) {
+      const lower = content.toLowerCase();
+      const isDeferred = POLL_PHRASES.some((p) => lower.includes(p));
+
+      if (!isDeferred || subagentDone) break;
+
+      polls++;
+      core.info(`🔄 Agent deferred to background (poll ${polls}/${MAX_POLLS}). Waiting ${POLL_DELAY / 1000}s…`);
+      await new Promise((r) => setTimeout(r, POLL_DELAY));
+
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) break;
+
+      response = await session.sendAndWait(
+        { prompt: "Has the background task finished? Show me the complete results." },
+        remaining
+      );
+      content = response?.data.content ?? "";
     }
 
-    // Detect "running in background" non-answers
-    const lowerContent = content.toLowerCase();
-    if (lowerContent.includes("running in the background") ||
-        lowerContent.includes("is now analyzing") ||
-        lowerContent.includes("will update you") ||
-        lowerContent.includes("will notify you") ||
-        lowerContent.includes("check its status") ||
-        lowerContent.includes("analysis is complete")) {
-      throw new Error(
-        `Agent "${agentName}" deferred work to a background task instead of completing inline. ` +
-        `Response: "${content.substring(0, 200)}"`
-      );
+    if (Date.now() >= deadline) {
+      throw new Error(`Timeout after ${timeout}ms waiting for agent "${agentName}" to complete.`);
+    }
+
+    if (!content) {
+      core.warning("⚠️  Agent returned empty response.");
     }
 
     core.info("\n--- Agent response ---");
