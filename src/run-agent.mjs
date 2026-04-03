@@ -47,6 +47,7 @@ export function parseInputs(isGitHubActions) {
       agentName: core.getInput("agent-name", { required: true }),
       userPrompt: core.getInput("prompt", { required: true }),
       model: core.getInput("model") || "gpt-4.1",
+      githubToken: core.getInput("github-token") || undefined,
     };
   }
   const [, , agentName, userPrompt] = process.argv;
@@ -54,13 +55,14 @@ export function parseInputs(isGitHubActions) {
     agentName,
     userPrompt,
     model: process.env.MODEL || "gpt-4.1",
+    githubToken: process.env.GITHUB_TOKEN || undefined,
   };
 }
 
 // --- Main ---
 async function main() {
   const isGitHubActions = process.env.GITHUB_ACTIONS === "true";
-  const { agentName, userPrompt, model } = parseInputs(isGitHubActions);
+  const { agentName, userPrompt, model, githubToken } = parseInputs(isGitHubActions);
 
   if (!agentName || !userPrompt) {
     const msg = 'Usage: node src/run-agent.mjs <agent-name> "<prompt>"';
@@ -85,7 +87,7 @@ async function main() {
   }
 
   try {
-    const client = new CopilotClient();
+    const client = new CopilotClient({ githubToken });
 
     const session = await client.createSession({
       model,
