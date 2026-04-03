@@ -30,6 +30,7 @@ call-custom-agents/
 | `agent-name` | ✅ | — | Name of the agent to run (`researcher`, `editor`, `security-auditor`) |
 | `prompt` | ✅ | — | The prompt to send to the agent |
 | `model` | ❌ | `gpt-4.1` | The model to use |
+| `github-token` | ❌ | — | GitHub token for authentication. Takes priority over other auth methods. Recommended: `${{ secrets.GITHUB_TOKEN }}` |
 
 ### Outputs
 
@@ -52,6 +53,7 @@ jobs:
         with:
           agent-name: security-auditor
           prompt: 'Are there any SQL injection risks in this codebase?'
+          github-token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Print response
         run: echo "${{ steps.audit.outputs.response }}"

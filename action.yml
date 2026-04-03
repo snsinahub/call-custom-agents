@@ -13,6 +13,9 @@ inputs:
     description: 'The model to use for the agent'
     required: false
     default: 'gpt-4.1'
+  github-token:
+    description: 'GitHub token for authentication. When provided, takes priority over other authentication methods.'
+    required: false
 
 outputs:
   response:
@@ -28,3 +31,4 @@ runs:
         INPUT_AGENT-NAME: ${{ inputs.agent-name }}
         INPUT_PROMPT: ${{ inputs.prompt }}
         INPUT_MODEL: ${{ inputs.model }}
+        INPUT_GITHUB-TOKEN: ${{ inputs.github-token }}

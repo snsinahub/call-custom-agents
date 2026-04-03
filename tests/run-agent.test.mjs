@@ -1,7 +1,7 @@
 // tests/run-agent.test.mjs
 // Run with: npm test
 
-import { test, describe } from "node:test";
+import { test, describe, afterEach } from "node:test";
 import assert from "node:assert/strict";
 import { AGENTS, findAgent, parseInputs } from "../src/run-agent.mjs";
 
@@ -57,14 +57,28 @@ describe("findAgent()", () => {
 
 describe("parseInputs() — CLI mode", () => {
   const originalArgv = process.argv;
-  const originalEnv = process.env.MODEL;
+  const originalModel = process.env.MODEL;
+  const originalGithubToken = process.env.GITHUB_TOKEN;
+
+  afterEach(() => {
+    process.argv = originalArgv;
+    if (originalModel === undefined) {
+      delete process.env.MODEL;
+    } else {
+      process.env.MODEL = originalModel;
+    }
+    if (originalGithubToken === undefined) {
+      delete process.env.GITHUB_TOKEN;
+    } else {
+      process.env.GITHUB_TOKEN = originalGithubToken;
+    }
+  });
 
   test("reads agentName and userPrompt from process.argv", () => {
     process.argv = ["node", "run-agent.mjs", "researcher", "How does auth work?"];
     const inputs = parseInputs(false);
     assert.equal(inputs.agentName, "researcher");
     assert.equal(inputs.userPrompt, "How does auth work?");
-    process.argv = originalArgv;
   });
 
   test("uses MODEL env var when set", () => {
@@ -72,12 +86,6 @@ describe("parseInputs() — CLI mode", () => {
     process.env.MODEL = "gpt-4o";
     const inputs = parseInputs(false);
     assert.equal(inputs.model, "gpt-4o");
-    process.argv = originalArgv;
-    if (originalEnv === undefined) {
-      delete process.env.MODEL;
-    } else {
-      process.env.MODEL = originalEnv;
-    }
   });
 
   test("defaults to gpt-4.1 when MODEL env var is not set", () => {
@@ -85,9 +93,19 @@ describe("parseInputs() — CLI mode", () => {
     delete process.env.MODEL;
     const inputs = parseInputs(false);
     assert.equal(inputs.model, "gpt-4.1");
-    process.argv = originalArgv;
-    if (originalEnv !== undefined) {
-      process.env.MODEL = originalEnv;
-    }
+  });
+
+  test("reads githubToken from GITHUB_TOKEN env var", () => {
+    process.argv = ["node", "run-agent.mjs", "researcher", "Hello"];
+    process.env.GITHUB_TOKEN = "ghs_testtoken123";
+    const inputs = parseInputs(false);
+    assert.equal(inputs.githubToken, "ghs_testtoken123");
+  });
+
+  test("githubToken is undefined when GITHUB_TOKEN env var is not set", () => {
+    process.argv = ["node", "run-agent.mjs", "researcher", "Hello"];
+    delete process.env.GITHUB_TOKEN;
+    const inputs = parseInputs(false);
+    assert.equal(inputs.githubToken, undefined);
   });
 });
