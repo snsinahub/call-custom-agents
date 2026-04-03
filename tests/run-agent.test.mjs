@@ -3,7 +3,7 @@
 
 import { test, describe, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { SYSTEM_PROMPT, MCP_SERVERS, parseInputs } from "../src/run-agent.mjs";
+import { SYSTEM_PROMPT, MCP_SERVERS, buildPrompt, parseInputs } from "../src/run-agent.mjs";
 
 describe("SYSTEM_PROMPT", () => {
   test("is a non-empty string", () => {
@@ -16,10 +16,33 @@ describe("SYSTEM_PROMPT", () => {
     assert.ok(SYSTEM_PROMPT.includes("background"));
   });
 
+  test("forbids sub-agent delegation", () => {
+    assert.ok(SYSTEM_PROMPT.includes("sub-agent"));
+    assert.ok(SYSTEM_PROMPT.includes("Do NOT delegate"));
+  });
+
+  test("requires edit tool and MCP tools", () => {
+    assert.ok(SYSTEM_PROMPT.includes("`edit` tool"));
+    assert.ok(SYSTEM_PROMPT.includes("github/create_issue"));
+  });
+});
+
+describe("buildPrompt()", () => {
+  test("includes user prompt", () => {
+    const result = buildPrompt("check for security issues");
+    assert.ok(result.includes("check for security issues"));
+  });
+
   test("includes analysis steps", () => {
-    assert.ok(SYSTEM_PROMPT.includes("repository structure"));
-    assert.ok(SYSTEM_PROMPT.includes("dependencies"));
-    assert.ok(SYSTEM_PROMPT.includes("repo-analysis.md"));
+    const result = buildPrompt("test");
+    assert.ok(result.includes("repo-analysis.md"));
+    assert.ok(result.includes("github/create_issue"));
+    assert.ok(result.includes("`edit` tool"));
+  });
+
+  test("forbids sub-agent delegation in prompt", () => {
+    const result = buildPrompt("test");
+    assert.ok(result.includes("do NOT delegate"));
   });
 });
 

@@ -4,19 +4,33 @@ import { CopilotClient } from "@github/copilot-sdk";
 // ── System instruction for the agent ────────────────────────────────────────
 export const SYSTEM_PROMPT =
   "You are a code analysis specialist running in a non-interactive CI pipeline. " +
-  "You MUST complete ALL work in the current turn before responding. " +
-  "NEVER say work is running in the background. NEVER defer work to a later step. " +
-  "NEVER suggest /tasks or ask the user to check back. " +
-  "Do everything synchronously in this turn:\n" +
-  "1. Use tools to map the repository structure\n" +
-  "2. Analyze dependencies (package.json, requirements.txt, go.mod, etc.)\n" +
-  "3. Identify code patterns and CI/CD configuration\n" +
-  "4. Run `mkdir -p reports` then write findings to `reports/repo-analysis.md` " +
-  "   including Mermaid diagrams\n" +
-  "5. Check for existing GitHub issues (github/list_issues) then create issues " +
-  "   for each new finding (github/create_issue)\n" +
-  "6. Only after ALL steps are complete, respond with a summary of what you did " +
-  "   and the issues you created.";
+  "CRITICAL RULES:\n" +
+  "- Do NOT delegate work to sub-agents or background tasks.\n" +
+  "- Do NOT use the task or agent tool to dispatch sub-agents.\n" +
+  "- Do ALL work yourself, directly, in this turn.\n" +
+  "- NEVER say work is running in the background.\n" +
+  "- NEVER suggest /tasks or ask the user to check back.\n" +
+  "- You MUST use the `edit` tool to write files to disk.\n" +
+  "- You MUST use GitHub MCP tools (github/create_issue) to create issues.\n" +
+  "- Only respond with a summary AFTER all file writes and issue creation are complete.";
+
+// ── Build the full prompt sent to the model ─────────────────────────────────
+export function buildPrompt(userPrompt) {
+  return (
+    "Perform the following analysis on the repository in the current working directory. " +
+    "Do ALL steps yourself — do NOT delegate to sub-agents:\n\n" +
+    "1. Use the `list_directory` and `read_file` tools to map the repository structure\n" +
+    "2. Analyze dependencies (package.json, pom.xml, requirements.txt, go.mod, etc.)\n" +
+    "3. Identify code patterns and CI/CD configuration\n" +
+    "4. Use the `execute` tool to run `mkdir -p reports`\n" +
+    "5. Use the `edit` tool to write a detailed report to `reports/repo-analysis.md` " +
+    "   including Mermaid diagrams for structure, dependencies, and CI/CD pipeline\n" +
+    "6. Use the `github/list_issues` MCP tool to check for existing issues\n" +
+    "7. Use the `github/create_issue` MCP tool to create an issue for each NEW finding\n" +
+    "8. After ALL steps are done, respond with a summary\n\n" +
+    "Additional context from user: " + userPrompt
+  );
+}
 
 // ── MCP server config for GitHub API access ─────────────────────────────────
 export const MCP_SERVERS = {
@@ -131,8 +145,9 @@ async function run() {
     });
 
     // ── Send the prompt and wait for completion ──────────────────────────
+    const fullPrompt = buildPrompt(userPrompt);
     core.info(`⏳ Waiting for agent to complete (timeout: ${timeout}ms)…`);
-    const response = await session.sendAndWait({ prompt: userPrompt }, timeout);
+    const response = await session.sendAndWait({ prompt: fullPrompt }, timeout);
     const content  = response?.data.content ?? "";
 
     core.info("\n--- Agent response ---");
