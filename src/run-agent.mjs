@@ -51,21 +51,12 @@ async function run() {
   await client.start();
 
   try {
-    // Create session with the agent activated inline.
-    // Using customAgents + agent makes the CLI run it in the foreground
-    // (inline in the main session) rather than dispatching it as a
-    // background sub-agent. The minimal prompt defers to the remote
-    // agent's own .agent.md definition which the CLI merges in.
+    // Create session WITHOUT customAgents. The CLI discovers remote agents
+    // from .github-private/agents/ automatically. We invoke the remote
+    // agent via @mention in the prompt and wait for subagent.completed.
     const session = await client.createSession({
       model,
       workingDirectory,
-      customAgents: [{
-        name: agentName,
-        prompt: "Follow the instructions from your agent definition. " +
-                "Complete ALL work in this turn. Do NOT defer to background tasks.",
-        infer: false,
-      }],
-      agent: agentName,
       systemMessage: {
         mode: "append",
         content: SYSTEM_PROMPT,
@@ -73,10 +64,24 @@ async function run() {
       onPermissionRequest: async () => ({ kind: "approved" }),
     });
 
-    // ── Track agent selection to validate the right agent ran ──────────
+    // ── Track agent lifecycle ──────────────────────────────────────────
     let discoveredAgents = null;
-    let mcpServersLoaded = false;
+    let lastAssistantContent = "";
+
+    // Promise that resolves when the sub-agent completes or the session
+    // becomes idle after the sub-agent finishes its work.
+    const { promise: agentDone, resolve: resolveAgent, reject: rejectAgent } =
+      Promise.withResolvers();
+
+    let subagentStarted = false;
+    let subagentCompleted = false;
     let wrongAgentStarted = null;
+
+    const timeoutId = setTimeout(() => {
+      rejectAgent(new Error(
+        `Timeout after ${timeout}ms waiting for agent "${agentName}" to complete.`
+      ));
+    }, timeout);
 
     // ── Subscribe to all session events for visibility ─────────────────
     session.on((event) => {
@@ -86,8 +91,7 @@ async function run() {
           core.info(`📋 Custom agents discovered: ${JSON.stringify(event.data)}`);
           break;
         case "session.mcp_servers_loaded":
-          mcpServersLoaded = true;
-          core.info("🔌 MCP servers loaded (agent found and activated)");
+          core.info("🔌 MCP servers loaded");
           break;
         case "subagent.selected":
           core.info(
@@ -96,8 +100,8 @@ async function run() {
           );
           break;
         case "subagent.started": {
+          subagentStarted = true;
           const startedName = event.data.agentName ?? event.data.agentDisplayName ?? "";
-          // Detect if a DIFFERENT agent started (e.g. built-in "Explore Agent")
           if (startedName.toLowerCase() !== agentName.toLowerCase() &&
               !startedName.toLowerCase().includes(agentName.toLowerCase())) {
             wrongAgentStarted = startedName;
@@ -109,29 +113,35 @@ async function run() {
           break;
         }
         case "subagent.completed":
+          subagentCompleted = true;
           core.info(`✅ Sub-agent completed: ${event.data.agentDisplayName}`);
           break;
         case "subagent.failed":
           core.error(`❌ Sub-agent failed: ${event.data.agentDisplayName}`);
           core.error(`   Reason: ${event.data.error}`);
+          rejectAgent(new Error(
+            `Sub-agent "${event.data.agentDisplayName}" failed: ${event.data.error}`
+          ));
           break;
         case "subagent.deselected":
           core.info("↩  Agent deselected, returning to parent");
           break;
-        case "tool.called":
-          core.info(`🔧 Tool called: ${event.data.name}`);
-          break;
-        case "tool.result":
-          core.info(`🔧 Tool result: ${event.data.name} → ${event.data.status ?? "ok"}`);
-          break;
         case "assistant.message":
-          core.info(`💬 Assistant message received (${event.data.content?.length ?? 0} chars)`);
+          lastAssistantContent = event.data.content ?? "";
+          core.info(`💬 Assistant message received (${lastAssistantContent.length} chars)`);
           break;
         case "session.idle":
-          core.info("⏸  Session idle — agent finished processing");
+          core.info("⏸  Session idle");
+          // Only resolve when idle AFTER sub-agent completed (the main
+          // agent does a final turn to summarize sub-agent output, then
+          // goes idle). If no sub-agent was started, also resolve.
+          if (subagentCompleted || !subagentStarted) {
+            resolveAgent();
+          }
           break;
         case "session.error":
           core.error(`🚨 Session error: ${event.data.message}`);
+          rejectAgent(new Error(`Session error: ${event.data.message}`));
           break;
         default:
           core.info(`📡 Event: ${event.type}`);
@@ -139,19 +149,18 @@ async function run() {
       }
     });
 
-    // ── Wait for agent discovery, then validate ────────────────────────
-    // Give the CLI time to discover remote agents (the
-    // session.custom_agents_updated event fires during session setup).
-    // We check after sendAndWait, but the event handler above already
-    // captured discoveredAgents by then.
+    // ── Send prompt addressing the remote agent via @mention ────────────
+    const fullPrompt = `@${agentName} ${userPrompt}`;
+    core.info(`⏳ Sending prompt to @${agentName} (timeout: ${timeout}ms)…`);
+    await session.send({ prompt: fullPrompt });
 
-    // ── Send the prompt directly (agent already active via `agent:`) ────
-    core.info(`⏳ Sending prompt to ${agentName} (timeout: ${timeout}ms)…`);
-    const response = await session.sendAndWait({ prompt: userPrompt }, timeout);
-    const content  = response?.data.content ?? "";
+    // Wait for the agent to finish (subagent.completed + session.idle)
+    await agentDone;
+    clearTimeout(timeoutId);
 
-    // ── Validate the correct agent actually ran ─────────────────────────
-    // Check if the agent was in the discovered list
+    const content = lastAssistantContent;
+
+    // ── Validate ────────────────────────────────────────────────────────
     const agentList = discoveredAgents?.agents ?? [];
     const agentFound = agentList.some(
       (a) => a.name === agentName || a.id === agentName
@@ -168,17 +177,7 @@ async function run() {
     if (wrongAgentStarted) {
       throw new Error(
         `Agent "${agentName}" was discovered but NOT activated. ` +
-        `The CLI fell back to built-in "${wrongAgentStarted}". ` +
-        `This may be a Copilot SDK issue with remote agent selection.`
-      );
-    }
-
-    // If the org agent defines MCP servers, session.mcp_servers_loaded fires.
-    if (!mcpServersLoaded && !wrongAgentStarted) {
-      core.warning(
-        `⚠️  session.mcp_servers_loaded was NOT received. ` +
-        `Agent "${agentName}" may not have been fully activated. ` +
-        `If this agent defines MCP servers in its .agent.md, this indicates a problem.`
+        `The CLI fell back to built-in "${wrongAgentStarted}".`
       );
     }
 
