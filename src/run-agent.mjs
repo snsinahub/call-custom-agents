@@ -231,7 +231,35 @@ async function run() {
         continue;
       }
 
-      // Second: check if asking for confirmation
+      // Second: check if the agent stated intent to do more work but
+      // then went idle without doing it (common with sub-agent dispatch)
+      const isIncompleteWork =
+        lower.includes("let me create") ||
+        lower.includes("let me write") ||
+        lower.includes("let me generate") ||
+        lower.includes("let me verify") ||
+        lower.includes("let me compile") ||
+        lower.includes("let me build") ||
+        lower.includes("let me produce") ||
+        lower.includes("now i'll create") ||
+        lower.includes("now i'll write") ||
+        lower.includes("now i'll generate") ||
+        lower.includes("i will create") ||
+        lower.includes("i will write") ||
+        lower.includes("i will generate");
+
+      if (isIncompleteWork && continueCount < MAX_CONTINUES) {
+        continueCount++;
+        core.info(`🔄 Agent stated intent to continue but went idle (${continueCount}/${MAX_CONTINUES}). Auto-continuing…`);
+        sessionIdle = false;
+        lastActivityTime = Date.now();
+        await session.send({
+          prompt: "Continue. Write all output files now. Do not stop until the report is fully written and saved to disk.",
+        });
+        continue;
+      }
+
+      // Third: check if asking for confirmation
       const isAskingToContinue =
         lower.includes("let me know") ||
         lower.includes("shall i") ||
