@@ -2,16 +2,20 @@
   "name": "call-custom-agents",
   "version": "1.0.0",
   "description": "Run GitHub Copilot SDK custom agents from the command line",
-  "type": "module",
   "engines": {
     "node": ">=18"
   },
   "scripts": {
-    "start": "node run-agent.mjs",
-    "run-agent": "node run-agent.mjs"
+    "start": "node src/run-agent.mjs",
+    "run-agent": "node src/run-agent.mjs",
+    "build": "ncc build src/run-agent.mjs -o dist --minify",
+    "test": "node --test tests/run-agent.test.mjs"
   },
   "dependencies": {
     "@actions/core": "1.11.1",
     "@github/copilot-sdk": "0.2.0"
+  },
+  "devDependencies": {
+    "@vercel/ncc": "0.38.3"
   }
 }
