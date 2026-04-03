@@ -1,16 +1,6 @@
 import * as core from "@actions/core";
 import { CopilotClient } from "@github/copilot-sdk";
 
-// ── CI-specific system message appended to the agent's own instructions ─────
-export const SYSTEM_PROMPT =
-  "You are running in a non-interactive CI pipeline. " +
-  "CRITICAL RULES:\n" +
-  "- Complete ALL work in this turn before responding.\n" +
-  "- NEVER say work is running in the background.\n" +
-  "- NEVER suggest /tasks or ask the user to check back.\n" +
-  "- Use tools to actually perform actions — do not just describe what you would do.\n" +
-  "- Only respond with a summary AFTER all tool calls are complete.";
-
 // ── Input parsing (works both in Actions and CLI mode) ──────────────────────
 export function parseInputs(isActions = true) {
   if (isActions) {
@@ -63,6 +53,7 @@ async function run() {
 
     // ── Track events ───────────────────────────────────────────────────
     let subagentDone = false;
+    let subagentResultContent = "";  // Captures the sub-agent's actual output
 
     session.on((event) => {
       switch (event.type) {
@@ -87,9 +78,17 @@ async function run() {
           core.error(`❌ Sub-agent failed: ${event.data.agentDisplayName}`);
           core.error(`   Reason: ${event.data.error}`);
           break;
-        case "assistant.message":
-          core.info(`💬 Assistant message received (${event.data.content?.length ?? 0} chars)`);
+        case "assistant.message": {
+          const msgContent = event.data.content ?? "";
+          core.info(`💬 Assistant message received (${msgContent.length} chars)`);
+          // The sub-agent's real results come as large messages (>500 chars).
+          // The parent's "still running" summaries are short (~200 chars).
+          // Keep the largest content as the sub-agent result.
+          if (msgContent.length > subagentResultContent.length) {
+            subagentResultContent = msgContent;
+          }
           break;
+        }
         case "session.idle":
           core.info("⏸  Session idle");
           break;
@@ -108,72 +107,40 @@ async function run() {
     let response = await session.sendAndWait({ prompt: fullPrompt }, timeout);
     let content = response?.data.content ?? "";
 
-    // ── Poll loop: org agents dispatch to background, so we keep ────────
-    // asking until the sub-agent finishes and produces real output.
-    // Use broad patterns — the model varies its wording each time.
-    const POLL_PHRASES = [
-      "running in the background",
-      "is still running",
-      "is now running",
-      "still in progress",
-      "not finished",
-      "has not completed",
-      "hasn't completed",
-      "not yet complete",
-      "is now analyzing",
-      "will update you",
-      "will notify you",
-      "will be automatically notified",
-      "as soon as it completes",
-      "when it completes",
-      "check its status",
-      "check its progress",
-      "monitor its progress",
-      "/tasks",
-      "background task",
-      "let me know if you need anything else in the meantime",
-    ];
-    const MAX_POLLS = 120;
-    const POLL_DELAY = 15000; // 15s between polls
-    let polls = 0;
+    // ── Wait for sub-agent completion ────────────────────────────────
+    // Remote org agents always run as background sub-agents. The initial
+    // sendAndWait returns a deferral message. We wait for the SDK's
+    // subagent.completed event, then send a follow-up prompt to the
+    // parent to write the results to disk.
+    const POLL_DELAY = 5000; // 5s between checks
     const deadline = Date.now() + timeout;
 
-    while (polls < MAX_POLLS && Date.now() < deadline) {
-      const lower = content.toLowerCase();
-      const isDeferred = POLL_PHRASES.some((p) => lower.includes(p));
-
-      if (!isDeferred) break;
-
-      // If the SDK tells us subagent is done, ask for results immediately
-      if (subagentDone) {
-        core.info("✅ Sub-agent completed (via SDK event). Requesting final results…");
-        const remaining = deadline - Date.now();
-        if (remaining <= 0) break;
-        response = await session.sendAndWait(
-          { prompt: "The background task has completed. Show me the full results and any files that were created or modified." },
-          remaining
-        );
-        content = response?.data.content ?? "";
-        break;
-      }
-
-      polls++;
-      core.info(`🔄 Agent deferred to background (poll ${polls}/${MAX_POLLS}). Waiting ${POLL_DELAY / 1000}s…`);
+    while (!subagentDone && Date.now() < deadline) {
+      core.info(`⏳ Waiting for sub-agent to complete… (${Math.round((Date.now() - (deadline - timeout)) / 1000)}s elapsed)`);
       await new Promise((r) => setTimeout(r, POLL_DELAY));
-
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) break;
-
-      response = await session.sendAndWait(
-        { prompt: "Has the background task finished? Show me the complete results." },
-        remaining
-      );
-      content = response?.data.content ?? "";
     }
 
     if (Date.now() >= deadline) {
       throw new Error(`Timeout after ${timeout}ms waiting for agent "${agentName}" to complete.`);
     }
+
+    // ── Sub-agent done — ask parent to write results to disk ──────────
+    core.info("✅ Sub-agent completed. Sending results to parent for file writes…");
+    core.info(`📄 Captured sub-agent result: ${subagentResultContent.length} chars`);
+
+    const followUpPrompt = subagentResultContent
+      ? `The background analysis task has completed. Here are the results:\n\n${subagentResultContent}\n\n` +
+        `Now use the edit tool to write these results to reports/repo-analysis.md ` +
+        `(create the reports directory first with the execute tool if needed). ` +
+        `Then respond with a summary of what was written.`
+      : `The background task has completed. Show me the full results and write them to reports/repo-analysis.md.`;
+
+    const remaining = deadline - Date.now();
+    response = await session.sendAndWait(
+      { prompt: followUpPrompt },
+      remaining > 0 ? remaining : 60000
+    );
+    content = response?.data.content ?? "";
 
     if (!content) {
       core.warning("⚠️  Agent returned empty response.");

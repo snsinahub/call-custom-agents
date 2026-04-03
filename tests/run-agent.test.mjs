@@ -3,23 +3,7 @@
 
 import { test, describe, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { SYSTEM_PROMPT, parseInputs } from "../src/run-agent.mjs";
-
-describe("SYSTEM_PROMPT", () => {
-  test("is a non-empty string", () => {
-    assert.ok(typeof SYSTEM_PROMPT === "string");
-    assert.ok(SYSTEM_PROMPT.length > 0);
-  });
-
-  test("forbids background/deferred work", () => {
-    assert.ok(SYSTEM_PROMPT.includes("NEVER"));
-    assert.ok(SYSTEM_PROMPT.includes("background"));
-  });
-
-  test("enforces completing work in current turn", () => {
-    assert.ok(SYSTEM_PROMPT.includes("Complete ALL work"));
-  });
-});
+import { parseInputs } from "../src/run-agent.mjs";
 
 describe("parseInputs() — CLI mode", () => {
   const originalArgv = process.argv;
