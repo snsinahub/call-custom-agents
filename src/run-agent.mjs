@@ -164,78 +164,106 @@ async function run() {
     core.info(`📌 Current agent: ${current.agent?.name ?? "none"}`);
 
     // ── Send prompt using send() — we manage the wait ourselves ──────
-    // sendAndWait() resolves on session.idle, which is wrong when the
-    // agent dispatches background tasks. We use send() + custom wait.
     core.info(`⏳ Sending prompt (timeout: ${timeout}ms)…`);
     sessionIdle = false;
     await session.send({ prompt: userPrompt });
 
-    // ── Hybrid wait: handles both inline and background agents ──────
-    // Phase 1: Wait for initial session.idle (agent processes prompt).
-    // Phase 2: If background tasks were dispatched, keep waiting until
-    //          ALL activity stops for STABILIZATION period.
-    // This handles:
-    //   - repo-analyzer-mcp: works inline, idle = done (Phase 1 only)
-    //   - repo-analyzer: dispatches to background, needs Phase 2
-    //   - DiscoverApp: long inline work, idle fires when truly done
+    // ── Auto-continue loop ──────────────────────────────────────────
+    // Agents in CI often pause to ask for confirmation ("Let me know
+    // if you want to proceed", "shall I create issues?"). In an
+    // interactive session a human replies; here we auto-continue.
+    //
+    // Loop:
+    //   1. Wait for session.idle
+    //   2. Get the last assistant message
+    //   3. If it looks like a question / pause → send "yes, continue"
+    //   4. If it looks like a final summary → done
+    //   5. If background tasks are active → wait for stabilization
+    //
     const POLL_DELAY = 5000;
-    const STABILIZATION = 30000;  // 30s of no activity after idle = done
+    const STABILIZATION = 30000;
+    const MAX_CONTINUES = 10;  // safety: max auto-continue prompts
     const deadline = Date.now() + timeout;
+    let continueCount = 0;
 
-    // Phase 1: wait for first session.idle
-    core.info("📍 Phase 1: Waiting for initial session.idle…");
-    while (!sessionIdle && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, POLL_DELAY));
-      const elapsed = Math.round((Date.now() - (deadline - timeout)) / 1000);
-      core.info(`⏳ Waiting for session.idle… (${elapsed}s elapsed)`);
+    while (Date.now() < deadline) {
+      // Wait for session.idle
+      while (!sessionIdle && Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, POLL_DELAY));
+        const elapsed = Math.round((Date.now() - (deadline - timeout)) / 1000);
+        core.info(`⏳ Waiting for session.idle… (${elapsed}s elapsed)`);
+      }
+
+      if (Date.now() >= deadline) break;
+
+      // Session is idle — check the last message
+      const messages = await session.getMessages();
+      const assistantMsgs = messages.filter(
+        (m) => m.type === "assistant.message" && m.data?.content
+      );
+      const lastMsg = assistantMsgs.length > 0
+        ? assistantMsgs[assistantMsgs.length - 1].data.content
+        : "";
+
+      core.info(`📝 Last response (${lastMsg.length} chars): "${lastMsg.substring(0, 200)}…"`);
+
+      // Check if the agent is asking for confirmation / pausing
+      const lower = lastMsg.toLowerCase();
+      const isAskingToContinue =
+        lower.includes("let me know") ||
+        lower.includes("shall i") ||
+        lower.includes("would you like") ||
+        lower.includes("do you want") ||
+        lower.includes("want me to") ||
+        lower.includes("proceed with") ||
+        lower.includes("ready to") ||
+        lower.includes("if you want to review") ||
+        lower.includes("if you'd like") ||
+        lower.includes("next steps") ||
+        lower.includes("i will now") ||
+        lower.includes("i'll now");
+
+      if (isAskingToContinue && continueCount < MAX_CONTINUES) {
+        continueCount++;
+        core.info(`🔄 Agent paused for confirmation (${continueCount}/${MAX_CONTINUES}). Auto-continuing…`);
+        sessionIdle = false;
+        lastActivityTime = Date.now();
+        await session.send({
+          prompt: "Yes, proceed with all remaining steps. Complete everything without asking for confirmation. This is a non-interactive CI environment.",
+        });
+        continue; // back to waiting for idle
+      }
+
+      // Not asking a question — check if background tasks need settling
+      if (hasBackgroundTasks) {
+        const idleTime = Date.now() - lastActivityTime;
+        if (idleTime < STABILIZATION) {
+          core.info(`⏳ Background tasks settling… (${Math.round(idleTime / 1000)}s/${STABILIZATION / 1000}s)`);
+          await new Promise((r) => setTimeout(r, POLL_DELAY));
+
+          // Check if new activity started during wait
+          if (!sessionIdle) continue; // session went active again
+          continue; // recheck stabilization
+        }
+        core.info(`🏁 Background tasks settled (idle for ${Math.round(idleTime / 1000)}s).`);
+      }
+
+      // Done — agent finished and isn't asking questions
+      core.info(`✅ Agent completed. Auto-continued ${continueCount} times.`);
+      break;
     }
 
     if (Date.now() >= deadline) {
       throw new Error(`Timeout after ${timeout}ms waiting for agent "${agentName}".`);
     }
 
-    // Phase 2: if background tasks were detected, wait for them
-    if (hasBackgroundTasks) {
-      core.info("📍 Phase 2: Background tasks detected. Waiting for all activity to settle…");
-
-      // Reset — the agent might produce more activity
-      lastActivityTime = Date.now();
-
-      while (Date.now() < deadline) {
-        const idleTime = Date.now() - lastActivityTime;
-
-        // Done when: session is idle AND no activity for STABILIZATION period
-        if (sessionIdle && idleTime >= STABILIZATION) {
-          core.info(`🏁 All activity settled (idle for ${Math.round(idleTime / 1000)}s). Proceeding.`);
-          break;
-        }
-
-        // If session went non-idle (new turn started), reset
-        if (!sessionIdle) {
-          // Session is actively processing — just wait
-        }
-
-        const elapsed = Math.round((Date.now() - (deadline - timeout)) / 1000);
-        core.info(
-          `⏳ Phase 2: [idle: ${sessionIdle}, quiet: ${Math.round(idleTime / 1000)}s/${STABILIZATION / 1000}s, elapsed: ${elapsed}s]`
-        );
-        await new Promise((r) => setTimeout(r, POLL_DELAY));
-      }
-
-      if (Date.now() >= deadline) {
-        throw new Error(`Timeout after ${timeout}ms waiting for background tasks of agent "${agentName}".`);
-      }
-    } else {
-      core.info("📍 No background tasks detected — agent worked inline. Done.");
-    }
-
-    // ── Get the final messages to extract content ──────────────────────
-    const messages = await session.getMessages();
-    const assistantMessages = messages.filter(
+    // ── Extract final response ──────────────────────────────────────
+    const allMessages = await session.getMessages();
+    const finalAssistantMsgs = allMessages.filter(
       (m) => m.type === "assistant.message" && m.data?.content
     );
-    const content = assistantMessages.length > 0
-      ? assistantMessages[assistantMessages.length - 1].data.content
+    const content = finalAssistantMsgs.length > 0
+      ? finalAssistantMsgs[finalAssistantMsgs.length - 1].data.content
       : "";
 
     if (!content) {
