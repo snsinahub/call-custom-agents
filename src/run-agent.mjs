@@ -52,7 +52,16 @@ async function run() {
     });
 
     // ── Track events ───────────────────────────────────────────────────
-    let subagentDone = false;
+    // Track sub-agent lifecycle using toolCallId (per SDK docs).
+    // A multi-phase agent fires multiple subagent.started/completed pairs.
+    // We consider "all done" when: (a) at least one sub-agent was seen,
+    // (b) all started sub-agents have completed/failed, and
+    // (c) the session has been idle with no new sub-agent starts for
+    //     a stabilization period.
+    const runningSubagents = new Set();  // toolCallIds currently running
+    let totalStarted = 0;
+    let totalCompleted = 0;
+    let lastActivityTime = Date.now();
     let subagentResultContent = "";  // Captures the sub-agent's actual output
 
     session.on((event) => {
@@ -63,32 +72,53 @@ async function run() {
         case "session.mcp_servers_loaded":
           core.info("🔌 MCP servers loaded");
           break;
-        case "subagent.started":
+        case "subagent.started": {
+          const id = event.data.toolCallId;
+          runningSubagents.add(id);
+          totalStarted++;
+          lastActivityTime = Date.now();
           core.info(
             `▶  Sub-agent started: ${event.data.agentDisplayName} ` +
-            `(${event.data.toolCallId})`
+            `(${id}) [running: ${runningSubagents.size}, total: ${totalStarted}]`
           );
           break;
-        case "subagent.completed":
-          subagentDone = true;
-          core.info(`✅ Sub-agent completed: ${event.data.agentDisplayName}`);
+        }
+        case "subagent.completed": {
+          const id = event.data.toolCallId;
+          runningSubagents.delete(id);
+          totalCompleted++;
+          lastActivityTime = Date.now();
+          core.info(
+            `✅ Sub-agent completed: ${event.data.agentDisplayName} ` +
+            `(${id}) [running: ${runningSubagents.size}, done: ${totalCompleted}/${totalStarted}]`
+          );
           break;
-        case "subagent.failed":
-          subagentDone = true;
+        }
+        case "subagent.failed": {
+          const id = event.data.toolCallId;
+          runningSubagents.delete(id);
+          totalCompleted++;
+          lastActivityTime = Date.now();
           core.error(`❌ Sub-agent failed: ${event.data.agentDisplayName}`);
           core.error(`   Reason: ${event.data.error}`);
           break;
+        }
         case "assistant.message": {
           const msgContent = event.data.content ?? "";
           core.info(`💬 Assistant message received (${msgContent.length} chars)`);
-          // The sub-agent's real results come as large messages (>500 chars).
-          // The parent's "still running" summaries are short (~200 chars).
-          // Keep the largest content as the sub-agent result.
+          lastActivityTime = Date.now();
           if (msgContent.length > subagentResultContent.length) {
             subagentResultContent = msgContent;
           }
           break;
         }
+        case "tool.execution_start":
+        case "tool.execution_complete":
+        case "permission.requested":
+        case "permission.completed":
+          lastActivityTime = Date.now();
+          core.info(`📡 Event: ${event.type}`);
+          break;
         case "session.idle":
           core.info("⏸  Session idle");
           break;
@@ -107,26 +137,43 @@ async function run() {
     let response = await session.sendAndWait({ prompt: fullPrompt }, timeout);
     let content = response?.data.content ?? "";
 
-    // ── Wait for sub-agent completion ────────────────────────────────
-    // Remote org agents always run as background sub-agents. The initial
-    // sendAndWait returns a deferral message. We wait for the SDK's
-    // subagent.completed event, then send a follow-up prompt to the
-    // parent to write the results to disk.
-    const POLL_DELAY = 5000; // 5s between checks
+    // ── Wait for ALL sub-agent work to finish ─────────────────────────
+    // Multi-phase agents fire multiple subagent.started/completed pairs.
+    // We wait until: all started sub-agents have completed AND the session
+    // has been stable (no new activity) for IDLE_STABILIZATION ms.
+    const POLL_DELAY = 5000;        // 5s between checks
+    const IDLE_STABILIZATION = 15000; // 15s of no activity = truly done
     const deadline = Date.now() + timeout;
 
-    while (!subagentDone && Date.now() < deadline) {
-      core.info(`⏳ Waiting for sub-agent to complete… (${Math.round((Date.now() - (deadline - timeout)) / 1000)}s elapsed)`);
+    while (Date.now() < deadline) {
+      const allCompleted = totalStarted > 0 && runningSubagents.size === 0;
+      const idleTime = Date.now() - lastActivityTime;
+
+      if (allCompleted && idleTime >= IDLE_STABILIZATION) {
+        core.info(
+          `🏁 All sub-agents done (${totalCompleted}/${totalStarted}) ` +
+          `and idle for ${Math.round(idleTime / 1000)}s. Proceeding.`
+        );
+        break;
+      }
+
+      core.info(
+        `⏳ Waiting… [running: ${runningSubagents.size}, done: ${totalCompleted}/${totalStarted}, ` +
+        `idle: ${Math.round(idleTime / 1000)}s, elapsed: ${Math.round((Date.now() - (deadline - timeout)) / 1000)}s]`
+      );
       await new Promise((r) => setTimeout(r, POLL_DELAY));
     }
 
     if (Date.now() >= deadline) {
-      throw new Error(`Timeout after ${timeout}ms waiting for agent "${agentName}" to complete.`);
+      throw new Error(
+        `Timeout after ${timeout}ms. Sub-agents: ${totalCompleted}/${totalStarted} completed, ` +
+        `${runningSubagents.size} still running.`
+      );
     }
 
-    // ── Sub-agent done — ask parent to write results to disk ──────────
-    core.info("✅ Sub-agent completed. Sending results to parent for file writes…");
-    core.info(`📄 Captured sub-agent result: ${subagentResultContent.length} chars`);
+    // ── All phases done — ask parent to write results to disk ──────────
+    core.info(`✅ All sub-agents completed (${totalCompleted} total). Sending results to parent…`);
+    core.info(`📄 Captured largest sub-agent result: ${subagentResultContent.length} chars`);
 
     const followUpPrompt = subagentResultContent
       ? `The background analysis task has completed. Here are the results:\n\n${subagentResultContent}\n\n` +
