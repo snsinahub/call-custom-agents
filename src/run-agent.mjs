@@ -52,9 +52,10 @@ async function run() {
 
   try {
     // Create session pointing at the checked-out repo.
-    // The CLI discovers custom agents from .agent.md files in the repo
-    // (e.g. .github/agents/<name>.agent.md). The `agent` parameter
-    // selects which discovered agent to activate for the session.
+    // The CLI discovers custom agents from .agent.md / .agent.yaml files
+    // (org-level agents from .github-private/agents/, repo-level from
+    // .github/agents/). The `agent` parameter selects which discovered
+    // agent to activate for the session.
     const session = await client.createSession({
       model,
       workingDirectory,
@@ -66,21 +67,41 @@ async function run() {
       onPermissionRequest: async () => ({ kind: "approved" }),
     });
 
+    // ── Track agent selection to validate the right agent ran ──────────
+    let discoveredAgents = null;
+    let mcpServersLoaded = false;
+    let wrongAgentStarted = null;
+
     // ── Subscribe to all session events for visibility ─────────────────
     session.on((event) => {
       switch (event.type) {
+        case "session.custom_agents_updated":
+          discoveredAgents = event.data;
+          core.info(`📋 Custom agents discovered: ${JSON.stringify(event.data)}`);
+          break;
+        case "session.mcp_servers_loaded":
+          mcpServersLoaded = true;
+          core.info("🔌 MCP servers loaded (agent found and activated)");
+          break;
         case "subagent.selected":
           core.info(
             `🎯 Agent selected: ${event.data.agentDisplayName} | ` +
             `Tools: ${event.data.tools?.join(", ") ?? "all"}`
           );
           break;
-        case "subagent.started":
+        case "subagent.started": {
+          const startedName = event.data.agentName ?? event.data.agentDisplayName ?? "";
+          // Detect if a DIFFERENT agent started (e.g. built-in "Explore Agent")
+          if (startedName.toLowerCase() !== agentName.toLowerCase() &&
+              !startedName.toLowerCase().includes(agentName.toLowerCase())) {
+            wrongAgentStarted = startedName;
+          }
           core.info(
             `▶  Sub-agent started: ${event.data.agentDisplayName} ` +
             `(${event.data.toolCallId})`
           );
           break;
+        }
         case "subagent.completed":
           core.info(`✅ Sub-agent completed: ${event.data.agentDisplayName}`);
           break;
@@ -116,6 +137,37 @@ async function run() {
     core.info(`⏳ Waiting for agent to complete (timeout: ${timeout}ms)…`);
     const response = await session.sendAndWait({ prompt: userPrompt }, timeout);
     const content  = response?.data.content ?? "";
+
+    // ── Validate the correct agent actually ran ─────────────────────────
+    if (wrongAgentStarted) {
+      throw new Error(
+        `Agent "${agentName}" was NOT found. The CLI fell back to built-in "${wrongAgentStarted}". ` +
+        `Ensure the agent file exists in your org's .github-private/agents/ directory ` +
+        `(e.g. agents/${agentName}.agent.md) and the token has access to discover it.`
+      );
+    }
+
+    // If the org agent defines MCP servers, session.mcp_servers_loaded fires.
+    // Its absence when expected is a strong signal the agent wasn't found.
+    if (!mcpServersLoaded && !wrongAgentStarted) {
+      core.warning(
+        `⚠️  session.mcp_servers_loaded was NOT received. ` +
+        `Agent "${agentName}" may not have been discovered. ` +
+        `If this agent defines MCP servers in its .agent.md, this indicates a problem.`
+      );
+    }
+
+    // Detect "running in background" non-answers
+    const lowerContent = content.toLowerCase();
+    if (lowerContent.includes("running in the background") ||
+        lowerContent.includes("will update you") ||
+        lowerContent.includes("check its status")) {
+      throw new Error(
+        `Agent "${agentName}" did not complete its work — it deferred to a background task. ` +
+        `This likely means the agent was not properly discovered. ` +
+        `Ensure the agent file exists and the token has the required permissions.`
+      );
+    }
 
     core.info("\n--- Agent response ---");
     core.info(content);
