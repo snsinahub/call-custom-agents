@@ -50,11 +50,11 @@ describe("parseInputs() — CLI mode", () => {
     assert.equal(inputs.model, "gpt-4o");
   });
 
-  test("defaults to gpt-4.1 when MODEL env var is not set", () => {
+  test("defaults to claude-sonnet-4.6 when MODEL env var is not set", () => {
     process.argv = ["node", "run-agent.mjs", "editor", "Fix the bug"];
     delete process.env.MODEL;
     const inputs = parseInputs(false);
-    assert.equal(inputs.model, "gpt-4.1");
+    assert.equal(inputs.model, "claude-sonnet-4.6");
   });
 
   test("reads githubToken from GITHUB_TOKEN env var", () => {

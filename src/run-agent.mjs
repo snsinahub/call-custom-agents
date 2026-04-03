@@ -8,7 +8,7 @@ export function parseInputs(isActions = true) {
       userPrompt: core.getInput("prompt", { required: true }),
       agentName:  core.getInput("agent",  { required: true }),
       githubToken: core.getInput("token", { required: true }),
-      model:      core.getInput("model",  { required: false }) || "gpt-4.1",
+      model:      core.getInput("model",  { required: false }) || "claude-sonnet-4.6",
       timeout:    parseInt(core.getInput("timeout", { required: false }) || "600000", 10),
       workingDirectory: process.env.GITHUB_WORKSPACE || process.cwd(),
     };
@@ -19,7 +19,7 @@ export function parseInputs(isActions = true) {
     agentName,
     userPrompt: rest.join(" "),
     githubToken: process.env.GITHUB_TOKEN,
-    model:       process.env.MODEL || "gpt-4.1",
+    model:       process.env.MODEL || "claude-sonnet-4.6",
     timeout:     parseInt(process.env.TIMEOUT || "600000", 10),
     workingDirectory: process.cwd(),
   };
@@ -52,32 +52,91 @@ async function run() {
       onPermissionRequest: async () => ({ kind: "approved" }),
     });
 
-    // ── Track events for hybrid wait ─────────────────────────────────
+    // ── Dynamic state tracking via SDK events ──────────────────────
+    // Instead of static phrase matching, we track the agent's actual
+    // operational state through SDK events:
+    //   - pending tools   → work is actively executing
+    //   - active turns    → the LLM is generating a response
+    //   - background tasks → sub-agents / shells running
+    //   - task_complete   → agent explicitly signals it's done
+    //   - user_input      → agent is blocked waiting for user input
+    //   - idle + bg tasks → session paused but sub-agents still running
+
     let agentsDiscovered = false;
     let sessionIdle = false;
-    let hasBackgroundTasks = false;
+    let taskComplete = false;        // session.task_complete fired
+    let taskCompleteSummary = "";
+    let idleBackgroundTasks = null;   // from session.idle event data
+    const pendingTools = new Set();   // track in-flight tool calls
+    let activeTurnCount = 0;          // track nested assistant turns
+    let pendingUserInput = false;     // agent waiting for user input
     let lastActivityTime = Date.now();
 
     session.on((event) => {
       switch (event.type) {
+        // ── Discovery ─────────────────────────────────────────────
         case "session.custom_agents_updated":
           agentsDiscovered = true;
           core.info(`📋 Custom agents discovered: ${JSON.stringify(event.data)}`);
           break;
-        case "session.mcp_servers_loaded":
-          core.info("🔌 MCP servers loaded");
+
+        // ── Session lifecycle ─────────────────────────────────────
+        case "session.idle":
+          sessionIdle = true;
+          idleBackgroundTasks = event.data?.backgroundTasks ?? null;
+          core.info(
+            `⏸  Session idle` +
+            (idleBackgroundTasks
+              ? ` (bg: ${idleBackgroundTasks.agents?.length ?? 0} agents, ${idleBackgroundTasks.shells?.length ?? 0} shells)`
+              : "")
+          );
+          break;
+        case "session.task_complete":
+          taskComplete = true;
+          taskCompleteSummary = event.data?.summary ?? "";
+          core.info(`🏁 Task complete signal: ${taskCompleteSummary}`);
+          break;
+        case "session.error":
+          core.error(`🚨 Session error: ${event.data.message}`);
           break;
         case "session.background_tasks_changed":
-          hasBackgroundTasks = true;
           lastActivityTime = Date.now();
           core.info(`📡 Event: ${event.type}`);
           break;
+
+        // ── Assistant turns ───────────────────────────────────────
+        case "assistant.turn_start":
+          activeTurnCount++;
+          sessionIdle = false;
+          lastActivityTime = Date.now();
+          core.info(`📡 Turn start (active: ${activeTurnCount})`);
+          break;
+        case "assistant.turn_end":
+          activeTurnCount = Math.max(0, activeTurnCount - 1);
+          lastActivityTime = Date.now();
+          core.info(`📡 Turn end (active: ${activeTurnCount})`);
+          break;
+        case "assistant.message":
+          lastActivityTime = Date.now();
+          core.info(`💬 Assistant message (${event.data.content?.length ?? 0} chars)`);
+          break;
+
+        // ── Tool execution tracking ──────────────────────────────
+        case "tool.execution_start":
+          pendingTools.add(event.data.toolCallId ?? `tool-${Date.now()}`);
+          lastActivityTime = Date.now();
+          core.info(`🔧 Tool start: ${event.data.toolName ?? "unknown"} (pending: ${pendingTools.size})`);
+          break;
+        case "tool.execution_complete":
+          pendingTools.delete(event.data.toolCallId ?? "");
+          lastActivityTime = Date.now();
+          core.info(`🔧 Tool done (pending: ${pendingTools.size})`);
+          break;
+
+        // ── Sub-agent lifecycle ──────────────────────────────────
         case "subagent.started":
           lastActivityTime = Date.now();
-          core.info(
-            `▶  Sub-agent started: ${event.data.agentDisplayName} ` +
-            `(${event.data.toolCallId})`
-          );
+          core.info(`▶  Sub-agent started: ${event.data.agentDisplayName} (${event.data.toolCallId})`);
           break;
         case "subagent.completed":
           lastActivityTime = Date.now();
@@ -85,35 +144,39 @@ async function run() {
           break;
         case "subagent.failed":
           lastActivityTime = Date.now();
-          core.error(`❌ Sub-agent failed: ${event.data.agentDisplayName}`);
-          core.error(`   Reason: ${event.data.error}`);
+          core.error(`❌ Sub-agent failed: ${event.data.agentDisplayName} — ${event.data.error}`);
           break;
-        case "assistant.message":
+
+        // ── Blocking states ──────────────────────────────────────
+        case "user_input.requested":
+          pendingUserInput = true;
           lastActivityTime = Date.now();
-          core.info(`💬 Assistant message received (${event.data.content?.length ?? 0} chars)`);
+          core.info(`❓ User input requested: ${event.data.question ?? "(no question)"}`);
           break;
-        case "assistant.turn_start":
-          sessionIdle = false;  // new turn = no longer idle
+        case "user_input.completed":
+          pendingUserInput = false;
           lastActivityTime = Date.now();
-          core.info(`📡 Event: ${event.type}`);
-          break;
-        case "tool.execution_start":
-        case "tool.execution_complete":
-          lastActivityTime = Date.now();
-          core.info(`📡 Event: ${event.type}`);
           break;
         case "permission.requested":
         case "permission.completed":
           lastActivityTime = Date.now();
           core.info(`📡 Event: ${event.type}`);
           break;
-        case "session.idle":
-          sessionIdle = true;
-          core.info("⏸  Session idle");
+
+        // ── Notifications (sub-agent completion from server) ─────
+        case "system.notification": {
+          lastActivityTime = Date.now();
+          const kind = event.data?.kind;
+          if (kind?.type === "agent_completed") {
+            core.info(`📣 Notification: agent ${kind.agentId} completed (${kind.status})`);
+          } else if (kind?.type === "agent_idle") {
+            core.info(`📣 Notification: agent ${kind.agentId} idle`);
+          } else {
+            core.info(`📣 Notification: ${JSON.stringify(kind)}`);
+          }
           break;
-        case "session.error":
-          core.error(`🚨 Session error: ${event.data.message}`);
-          break;
+        }
+
         default:
           core.info(`📡 Event: ${event.type}`);
           break;
@@ -168,151 +231,125 @@ async function run() {
     sessionIdle = false;
     await session.send({ prompt: userPrompt });
 
-    // ── Auto-continue loop ──────────────────────────────────────────
-    // Agents in CI often pause to ask for confirmation ("Let me know
-    // if you want to proceed", "shall I create issues?"). In an
-    // interactive session a human replies; here we auto-continue.
+    // ── Dynamic wait loop ───────────────────────────────────────────
+    // Uses SDK event state (pending tools, active turns, background
+    // tasks, task_complete signal) instead of static phrase matching.
     //
-    // Loop:
-    //   1. Wait for session.idle
-    //   2. Get the last assistant message
-    //   3. If it looks like a question / pause → send "yes, continue"
-    //   4. If it looks like a final summary → done
-    //   5. If background tasks are active → wait for stabilization
+    // The agent is considered "done" when ALL of these are true:
+    //   1. session.idle has fired
+    //   2. No pending tool executions
+    //   3. No active assistant turns
+    //   4. No background tasks (agents/shells) reported by idle event
+    //   5. Idle duration exceeds stabilization threshold
     //
-    const POLL_DELAY = 5000;
-    const STABILIZATION = 30000;
-    const MAX_CONTINUES = 10;  // safety: max auto-continue prompts
+    // OR: session.task_complete fires (explicit done signal)
+    //
+    // If the agent is blocked on user_input, we auto-reply.
+    //
+    const POLL_DELAY = 3000;
+    const STABILIZATION = 15000;      // idle time before declaring done
+    const MAX_AUTO_REPLIES = 15;      // safety cap
     const deadline = Date.now() + timeout;
-    let continueCount = 0;
+    let autoReplyCount = 0;
 
     while (Date.now() < deadline) {
-      // Wait for session.idle
-      while (!sessionIdle && Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, POLL_DELAY));
-        const elapsed = Math.round((Date.now() - (deadline - timeout)) / 1000);
-        core.info(`⏳ Waiting for session.idle… (${elapsed}s elapsed)`);
+      await new Promise((r) => setTimeout(r, POLL_DELAY));
+
+      const elapsed = Math.round((Date.now() - (deadline - timeout)) / 1000);
+
+      // ── Explicit completion signal ──────────────────────────────
+      if (taskComplete) {
+        core.info(`🏁 Agent finished (task_complete). Auto-replied ${autoReplyCount} times.`);
+        break;
       }
 
-      if (Date.now() >= deadline) break;
+      // ── Still actively working? ─────────────────────────────────
+      const hasActiveTurns = activeTurnCount > 0;
+      const hasPendingTools = pendingTools.size > 0;
+      const hasBgTasks =
+        (idleBackgroundTasks?.agents?.length ?? 0) > 0 ||
+        (idleBackgroundTasks?.shells?.length ?? 0) > 0;
 
-      // Session is idle — check the last message
-      const messages = await session.getMessages();
-      const assistantMsgs = messages.filter(
-        (m) => m.type === "assistant.message" && m.data?.content
-      );
-      const lastMsg = assistantMsgs.length > 0
-        ? assistantMsgs[assistantMsgs.length - 1].data.content
-        : "";
-
-      core.info(`📝 Last response (${lastMsg.length} chars): "${lastMsg.substring(0, 200)}…"`);
-
-      // Check if the agent is asking for confirmation / pausing
-      const lower = lastMsg.toLowerCase();
-
-      // First: check if agent says work is STILL IN PROGRESS — never
-      // exit or auto-continue when the agent says it's still working
-      const isStillWorking =
-        lower.includes("still running") ||
-        lower.includes("still in progress") ||
-        lower.includes("analysis is still") ||
-        lower.includes("not yet complete") ||
-        lower.includes("hasn't completed") ||
-        lower.includes("has not completed") ||
-        lower.includes("will complete without interruption") ||
-        lower.includes("no further input is required");
-
-      if (isStillWorking) {
-        // Agent is working — reset activity timer and keep waiting
-        core.info("🔄 Agent says work is still in progress. Continuing to wait…");
-        lastActivityTime = Date.now();
-        sessionIdle = false; // force re-wait for next idle
-        await new Promise((r) => setTimeout(r, POLL_DELAY));
+      if (!sessionIdle || hasActiveTurns || hasPendingTools) {
+        core.info(
+          `⏳ Working… (${elapsed}s) ` +
+          `[idle=${sessionIdle}, turns=${activeTurnCount}, tools=${pendingTools.size}]`
+        );
         continue;
       }
 
-      // Second: check if the agent stated intent to do more work but
-      // then went idle without doing it (common with sub-agent dispatch)
-      const isIncompleteWork =
-        lower.includes("let me create") ||
-        lower.includes("let me write") ||
-        lower.includes("let me generate") ||
-        lower.includes("let me verify") ||
-        lower.includes("let me compile") ||
-        lower.includes("let me build") ||
-        lower.includes("let me produce") ||
-        lower.includes("now i'll create") ||
-        lower.includes("now i'll write") ||
-        lower.includes("now i'll generate") ||
-        lower.includes("i will create") ||
-        lower.includes("i will write") ||
-        lower.includes("i will generate");
-
-      if (isIncompleteWork && continueCount < MAX_CONTINUES) {
-        continueCount++;
-        core.info(`🔄 Agent stated intent to continue but went idle (${continueCount}/${MAX_CONTINUES}). Auto-continuing…`);
+      // ── Session is idle — handle blocking states ────────────────
+      // If the agent requested user input, auto-reply
+      if (pendingUserInput && autoReplyCount < MAX_AUTO_REPLIES) {
+        autoReplyCount++;
+        core.info(`🔄 Agent waiting for input (${autoReplyCount}/${MAX_AUTO_REPLIES}). Auto-replying…`);
         sessionIdle = false;
         lastActivityTime = Date.now();
         await session.send({
-          prompt: "Continue. Write all output files now. Do not stop until the report is fully written and saved to disk.",
+          prompt: "Yes, proceed. Complete all remaining steps without asking for confirmation. This is a non-interactive CI environment.",
         });
         continue;
       }
 
-      // Third: check if asking for confirmation
-      const isAskingToContinue =
-        lower.includes("let me know") ||
-        lower.includes("shall i") ||
-        lower.includes("would you like") ||
-        lower.includes("do you want") ||
-        lower.includes("want me to") ||
-        lower.includes("proceed with") ||
-        lower.includes("if you want to review") ||
-        lower.includes("if you'd like");
-
-      if (isAskingToContinue && continueCount < MAX_CONTINUES) {
-        continueCount++;
-        core.info(`🔄 Agent paused for confirmation (${continueCount}/${MAX_CONTINUES}). Auto-continuing…`);
-        sessionIdle = false;
-        lastActivityTime = Date.now();
-        await session.send({
-          prompt: "Yes, proceed with all remaining steps. Complete everything without asking for confirmation. This is a non-interactive CI environment.",
-        });
-        continue; // back to waiting for idle
-      }
-
-      // Not asking a question — check if background tasks need settling
-      if (hasBackgroundTasks) {
+      // ── Background tasks still running? ─────────────────────────
+      if (hasBgTasks) {
         const idleTime = Date.now() - lastActivityTime;
-        if (idleTime < STABILIZATION) {
-          core.info(`⏳ Background tasks settling… (${Math.round(idleTime / 1000)}s/${STABILIZATION / 1000}s)`);
-          await new Promise((r) => setTimeout(r, POLL_DELAY));
+        core.info(
+          `⏳ Background tasks active (${elapsed}s) ` +
+          `[agents=${idleBackgroundTasks.agents?.length ?? 0}, ` +
+          `shells=${idleBackgroundTasks.shells?.length ?? 0}, ` +
+          `idle=${Math.round(idleTime / 1000)}s]`
+        );
+        // Keep waiting — background tasks will fire events when done
+        continue;
+      }
 
-          // Re-fetch last message to check if agent reported completion
-          const freshMsgs = await session.getMessages();
-          const freshAssistant = freshMsgs.filter(
-            (m) => m.type === "assistant.message" && m.data?.content
-          );
-          const freshMsg = freshAssistant.length > 0
-            ? freshAssistant[freshAssistant.length - 1].data.content.toLowerCase()
-            : "";
+      // ── Idle with no background tasks — stabilization check ─────
+      const idleTime = Date.now() - lastActivityTime;
+      if (idleTime < STABILIZATION) {
+        core.info(`⏳ Stabilizing… (${Math.round(idleTime / 1000)}s/${STABILIZATION / 1000}s)`);
+        continue;
+      }
 
-          // If still says "in progress" — don't settle, keep waiting
-          if (freshMsg.includes("still running") ||
-              freshMsg.includes("still in progress") ||
-              freshMsg.includes("analysis is still")) {
-            core.info("🔄 Agent still reports work in progress. Resetting stabilization…");
-            lastActivityTime = Date.now();
-          }
+      // ── Stabilized — check if agent intended more work ──────────
+      // Get the last message to see if the agent stopped mid-thought.
+      // This is a lightweight fallback — most cases are caught above.
+      if (autoReplyCount < MAX_AUTO_REPLIES) {
+        const messages = await session.getMessages();
+        const lastAssistant = messages
+          .filter((m) => m.type === "assistant.message" && m.data?.content)
+          .pop();
+        const lastMsg = lastAssistant?.data?.content ?? "";
 
-          if (!sessionIdle) continue;
+        // Check for tool_requests in the last message (SDK-provided field
+        // indicating the agent issued tool calls that weren't executed)
+        const hasUnexecutedTools = (lastAssistant?.data?.toolRequests?.length ?? 0) > 0;
+
+        if (hasUnexecutedTools) {
+          autoReplyCount++;
+          core.info(`🔄 Unexecuted tool requests detected (${autoReplyCount}/${MAX_AUTO_REPLIES}). Nudging…`);
+          sessionIdle = false;
+          lastActivityTime = Date.now();
+          await session.send({ prompt: "Continue. Execute all pending operations and write output files." });
           continue;
         }
-        core.info(`🏁 Background tasks settled (idle for ${Math.round(idleTime / 1000)}s).`);
+
+        // Last-resort: check if last message ends mid-sentence
+        // (e.g., "Let me create…" with no following tool call)
+        const trimmed = lastMsg.trim();
+        const endsIncomplete = trimmed.endsWith("…") || trimmed.endsWith("...");
+        if (endsIncomplete) {
+          autoReplyCount++;
+          core.info(`🔄 Response appears incomplete (${autoReplyCount}/${MAX_AUTO_REPLIES}). Continuing…`);
+          sessionIdle = false;
+          lastActivityTime = Date.now();
+          await session.send({ prompt: "Continue. Complete the remaining work and write all files." });
+          continue;
+        }
       }
 
-      // Done — agent finished and isn't asking questions
-      core.info(`✅ Agent completed. Auto-continued ${continueCount} times.`);
+      // ── Done ────────────────────────────────────────────────────
+      core.info(`✅ Agent completed (${elapsed}s). Auto-replied ${autoReplyCount} times.`);
       break;
     }
 
