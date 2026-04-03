@@ -1,60 +1,15 @@
 import * as core from "@actions/core";
 import { CopilotClient } from "@github/copilot-sdk";
 
-// ── System instruction appended to the SDK default ──────────────────────────
+// ── CI-specific system message appended to the agent's own instructions ─────
 export const SYSTEM_PROMPT =
   "You are running in a non-interactive CI pipeline. " +
   "CRITICAL RULES:\n" +
-  "- Do NOT delegate work to other sub-agents or background tasks.\n" +
-  "- Do ALL work yourself, directly, using tools in this turn.\n" +
+  "- Complete ALL work in this turn before responding.\n" +
   "- NEVER say work is running in the background.\n" +
   "- NEVER suggest /tasks or ask the user to check back.\n" +
-  "- You MUST use tools to write files and create issues — do not just describe what you would do.\n" +
+  "- Use tools to actually perform actions — do not just describe what you would do.\n" +
   "- Only respond with a summary AFTER all tool calls are complete.";
-
-// ── Custom agent config builder ─────────────────────────────────────────────
-export function buildAgentConfig(agentName) {
-  return {
-    name: agentName,
-    displayName: agentName,
-    description: "Custom agent invoked from CI pipeline",
-    tools: null, // all tools available
-    prompt:
-      "You are a code analysis specialist. " +
-      "Do ALL work yourself in this turn — NEVER delegate to sub-agents or background tasks. " +
-      "Use tools to read, analyze, write files, and create GitHub issues. " +
-      "Steps:\n" +
-      "1. Use tools to map the repository structure and read key files\n" +
-      "2. Analyze dependencies and code patterns\n" +
-      "3. Use the execute tool to run `mkdir -p reports`\n" +
-      "4. Use the edit tool to write findings to `reports/repo-analysis.md` with Mermaid diagrams\n" +
-      "5. Use github/list_issues MCP tool to check existing issues\n" +
-      "6. Use github/create_issue MCP tool to create an issue for each NEW finding\n" +
-      "7. Only after ALL steps, respond with a summary of what you did",
-    mcpServers: {
-      github: {
-        type: "http",
-        url: "https://api.githubcopilot.com/mcp/",
-        tools: ["*"],
-        headers: {
-          "X-MCP-Toolsets": "issues,repos,users,pull_requests",
-        },
-      },
-    },
-    infer: false,
-  };
-}
-
-// ── Build the full prompt sent to the model ─────────────────────────────────
-export function buildPrompt(userPrompt) {
-  return (
-    "Analyze the repository in the current working directory. " +
-    "Do ALL steps yourself — do NOT delegate to sub-agents or background tasks. " +
-    "You MUST use tools to write a report file and create GitHub issues. " +
-    "Do not just describe findings — actually write them to disk and create issues.\n\n" +
-    "User instructions: " + userPrompt
-  );
-}
 
 // ── Input parsing (works both in Actions and CLI mode) ──────────────────────
 export function parseInputs(isActions = true) {
@@ -89,17 +44,17 @@ async function run() {
   core.info(`📂 Working directory: ${workingDirectory}`);
   core.info(`⏱  Timeout: ${timeout}ms`);
 
-  // ── Authenticate via env var (highest priority for CI/CD) ───────────────
+  // ── Authenticate ──────────────────────────────────────────────────────
   process.env.COPILOT_GITHUB_TOKEN = token;
 
   const client = new CopilotClient();
   await client.start();
 
   try {
-    // Create session with the custom agent activated.
-    // The agent config defines its tools, MCP servers, and instructions.
-    // systemMessage appends CI-specific rules (no background tasks, etc.)
-    const agentConfig = buildAgentConfig(agentName);
+    // Create session pointing at the checked-out repo.
+    // The CLI discovers custom agents from .agent.md files in the repo
+    // (e.g. .github/agents/<name>.agent.md). The `agent` parameter
+    // selects which discovered agent to activate for the session.
     const session = await client.createSession({
       model,
       workingDirectory,
@@ -107,7 +62,6 @@ async function run() {
         mode: "append",
         content: SYSTEM_PROMPT,
       },
-      customAgents: [agentConfig],
       agent: agentName,
       onPermissionRequest: async () => ({ kind: "approved" }),
     });
@@ -159,9 +113,8 @@ async function run() {
     });
 
     // ── Send the prompt and wait for completion ──────────────────────────
-    const fullPrompt = buildPrompt(userPrompt);
     core.info(`⏳ Waiting for agent to complete (timeout: ${timeout}ms)…`);
-    const response = await session.sendAndWait({ prompt: fullPrompt }, timeout);
+    const response = await session.sendAndWait({ prompt: userPrompt }, timeout);
     const content  = response?.data.content ?? "";
 
     core.info("\n--- Agent response ---");

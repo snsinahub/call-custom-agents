@@ -7,9 +7,8 @@ inputs:
     description: "The prompt to send to the agent"
     required: true
   agent:
-    description: "The custom agent name (must match the .agent.md filename without extension)"
+    description: "The custom agent name — must match an .agent.md file in the repo (e.g. .github/agents/my-agent.agent.md → agent: my-agent)"
     required: true
-    default: "repo-analyzer-mcp"
   token:
     description: "GitHub PAT with Copilot Requests permission"
     required: true

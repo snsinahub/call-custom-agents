@@ -3,7 +3,7 @@
 
 import { test, describe, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { SYSTEM_PROMPT, buildAgentConfig, buildPrompt, parseInputs } from "../src/run-agent.mjs";
+import { SYSTEM_PROMPT, parseInputs } from "../src/run-agent.mjs";
 
 describe("SYSTEM_PROMPT", () => {
   test("is a non-empty string", () => {
@@ -16,60 +16,8 @@ describe("SYSTEM_PROMPT", () => {
     assert.ok(SYSTEM_PROMPT.includes("background"));
   });
 
-  test("forbids sub-agent delegation", () => {
-    assert.ok(SYSTEM_PROMPT.includes("sub-agent"));
-    assert.ok(SYSTEM_PROMPT.includes("Do NOT delegate"));
-  });
-});
-
-describe("buildAgentConfig()", () => {
-  test("returns config with the given agent name", () => {
-    const cfg = buildAgentConfig("my-agent");
-    assert.equal(cfg.name, "my-agent");
-    assert.equal(cfg.displayName, "my-agent");
-  });
-
-  test("has required fields", () => {
-    const cfg = buildAgentConfig("test-agent");
-    assert.ok(cfg.prompt.length > 0);
-    assert.ok(cfg.description.length > 0);
-    assert.ok(cfg.mcpServers.github);
-    assert.equal(cfg.mcpServers.github.type, "http");
-  });
-
-  test("allows all tools", () => {
-    const cfg = buildAgentConfig("test-agent");
-    assert.equal(cfg.tools, null);
-  });
-
-  test("disables inference", () => {
-    const cfg = buildAgentConfig("test-agent");
-    assert.equal(cfg.infer, false);
-  });
-
-  test("agent prompt forbids delegation", () => {
-    const cfg = buildAgentConfig("test-agent");
-    assert.ok(cfg.prompt.includes("NEVER delegate"));
-  });
-});
-
-describe("buildPrompt()", () => {
-  test("includes user prompt", () => {
-    const result = buildPrompt("check for security issues");
-    assert.ok(result.includes("check for security issues"));
-  });
-
-  test("forbids sub-agent delegation in prompt", () => {
-    const result = buildPrompt("test");
-    assert.ok(result.includes("do NOT delegate"));
-  });
-});
-
-describe("MCP_SERVERS (in agent config)", () => {
-  test("has github server with issue toolset", () => {
-    const cfg = buildAgentConfig("test");
-    assert.ok(cfg.mcpServers.github);
-    assert.ok(cfg.mcpServers.github.headers["X-MCP-Toolsets"].includes("issues"));
+  test("enforces completing work in current turn", () => {
+    assert.ok(SYSTEM_PROMPT.includes("Complete ALL work"));
   });
 });
 
