@@ -17,7 +17,7 @@ jobs:
 
       - name: Analyze PR changes
         id: analyze
-        uses: snsina-org/call-custom-agents@main
+        uses: snsinahub/call-custom-agents@main
         with:
           agent: repo-analyzer-mcp
           prompt: |
