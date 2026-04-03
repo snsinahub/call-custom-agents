@@ -3,62 +3,13 @@
 
 import { test, describe, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { AGENTS, findAgent, parseInputs } from "../src/run-agent.mjs";
-
-describe("AGENTS registry", () => {
-  test("contains exactly the three built-in agents", () => {
-    const names = AGENTS.map((a) => a.name);
-    assert.deepEqual(names, ["researcher", "editor", "security-auditor"]);
-  });
-
-  test("every agent has the required fields", () => {
-    const requiredFields = ["name", "displayName", "description", "tools", "prompt"];
-    for (const agent of AGENTS) {
-      for (const field of requiredFields) {
-        assert.ok(
-          field in agent,
-          `Agent "${agent.name}" is missing field "${field}"`
-        );
-        assert.ok(agent[field] !== undefined && agent[field] !== null && agent[field] !== "", `Agent "${agent.name}" field "${field}" must not be empty`);
-      }
-      assert.ok(Array.isArray(agent.tools), `Agent "${agent.name}" tools must be an array`);
-      assert.ok(agent.tools.length > 0, `Agent "${agent.name}" must have at least one tool`);
-    }
-  });
-});
-
-describe("findAgent()", () => {
-  test("returns the researcher agent", () => {
-    const agent = findAgent("researcher");
-    assert.ok(agent, "should return an agent");
-    assert.equal(agent.name, "researcher");
-    assert.equal(agent.displayName, "Research Agent");
-  });
-
-  test("returns the editor agent", () => {
-    const agent = findAgent("editor");
-    assert.ok(agent, "should return an agent");
-    assert.equal(agent.name, "editor");
-    assert.equal(agent.displayName, "Editor Agent");
-  });
-
-  test("returns the security-auditor agent", () => {
-    const agent = findAgent("security-auditor");
-    assert.ok(agent, "should return an agent");
-    assert.equal(agent.name, "security-auditor");
-  });
-
-  test("returns null for an unknown agent name", () => {
-    assert.equal(findAgent("unknown-agent"), null);
-    assert.equal(findAgent(""), null);
-    assert.equal(findAgent(undefined), null);
-  });
-});
+import { parseInputs } from "../src/run-agent.mjs";
 
 describe("parseInputs() — CLI mode", () => {
   const originalArgv = process.argv;
   const originalModel = process.env.MODEL;
   const originalGithubToken = process.env.GITHUB_TOKEN;
+  const originalTimeout = process.env.TIMEOUT;
 
   afterEach(() => {
     process.argv = originalArgv;
@@ -72,6 +23,11 @@ describe("parseInputs() — CLI mode", () => {
     } else {
       process.env.GITHUB_TOKEN = originalGithubToken;
     }
+    if (originalTimeout === undefined) {
+      delete process.env.TIMEOUT;
+    } else {
+      process.env.TIMEOUT = originalTimeout;
+    }
   });
 
   test("reads agentName and userPrompt from process.argv", () => {
@@ -81,6 +37,12 @@ describe("parseInputs() — CLI mode", () => {
     assert.equal(inputs.userPrompt, "How does auth work?");
   });
 
+  test("joins multiple argv words into prompt", () => {
+    process.argv = ["node", "run-agent.mjs", "editor", "Fix", "the", "bug"];
+    const inputs = parseInputs(false);
+    assert.equal(inputs.userPrompt, "Fix the bug");
+  });
+
   test("uses MODEL env var when set", () => {
     process.argv = ["node", "run-agent.mjs", "editor", "Fix the bug"];
     process.env.MODEL = "gpt-4o";
@@ -88,11 +50,11 @@ describe("parseInputs() — CLI mode", () => {
     assert.equal(inputs.model, "gpt-4o");
   });
 
-  test("defaults to gpt-4.1 when MODEL env var is not set", () => {
+  test("defaults to claude-sonnet-4.6 when MODEL env var is not set", () => {
     process.argv = ["node", "run-agent.mjs", "editor", "Fix the bug"];
     delete process.env.MODEL;
     const inputs = parseInputs(false);
-    assert.equal(inputs.model, "gpt-4.1");
+    assert.equal(inputs.model, "claude-sonnet-4.6");
   });
 
   test("reads githubToken from GITHUB_TOKEN env var", () => {
@@ -107,5 +69,25 @@ describe("parseInputs() — CLI mode", () => {
     delete process.env.GITHUB_TOKEN;
     const inputs = parseInputs(false);
     assert.equal(inputs.githubToken, undefined);
+  });
+
+  test("defaults timeout to 600000ms", () => {
+    process.argv = ["node", "run-agent.mjs", "researcher", "Hello"];
+    delete process.env.TIMEOUT;
+    const inputs = parseInputs(false);
+    assert.equal(inputs.timeout, 600000);
+  });
+
+  test("reads TIMEOUT env var", () => {
+    process.argv = ["node", "run-agent.mjs", "researcher", "Hello"];
+    process.env.TIMEOUT = "300000";
+    const inputs = parseInputs(false);
+    assert.equal(inputs.timeout, 300000);
+  });
+
+  test("sets workingDirectory to cwd in CLI mode", () => {
+    process.argv = ["node", "run-agent.mjs", "researcher", "Hello"];
+    const inputs = parseInputs(false);
+    assert.equal(inputs.workingDirectory, process.cwd());
   });
 });

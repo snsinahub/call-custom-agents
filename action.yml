@@ -1,34 +1,115 @@
-name: 'Call Custom Agents'
-description: 'Run a named GitHub Copilot SDK custom agent with a prompt'
-author: 'snsina-org'
+name: "Copilot Custom Agent"
+description: "Runs a Copilot custom agent via the Copilot SDK"
+author: "snsinahub"
 
 inputs:
-  agent-name:
-    description: 'Name of the custom agent to run (researcher, editor, security-auditor)'
-    required: true
   prompt:
-    description: 'The prompt to send to the agent'
+    description: "The prompt to send to the agent"
+    required: true
+  agent:
+    description: "The custom agent name — must match an .agent.md file in the repo (e.g. .github/agents/my-agent.agent.md → agent: my-agent)"
+    required: true
+  token:
+    description: "GitHub PAT with Copilot Requests permission"
     required: true
   model:
-    description: 'The model to use for the agent'
+    description: "AI model to use"
     required: false
-    default: 'gpt-4.1'
-  github-token:
-    description: 'GitHub token for authentication. When provided, takes priority over other authentication methods.'
+    default: "claude-sonnet-4.6"
+  timeout:
+    description: "Timeout in milliseconds to wait for agent completion"
     required: false
+    default: "600000"
+  create-pr:
+    description: "Create a pull request if the agent changes any files (true/false)"
+    required: false
+    default: "true"
+  pr-title:
+    description: "Title for the auto-created pull request"
+    required: false
+    default: "chore: apply changes from Copilot agent"
+  pr-branch:
+    description: "Branch name for the auto-created pull request"
+    required: false
+    default: "copilot-agent/auto"
 
 outputs:
   response:
-    description: 'The response returned by the agent'
+    description: "The agent response content"
+    value: ${{ steps.agent.outputs.response }}
+  files-changed:
+    description: "Whether the agent changed any files (true/false)"
+    value: ${{ steps.changes.outputs.files_changed }}
+  pr-url:
+    description: "URL of the created pull request (empty if none)"
+    value: ${{ steps.create-pr.outputs.pr_url }}
 
 runs:
-  using: 'composite'
+  using: "composite"
   steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: "24"
+
+    - name: Install dependencies
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: npm ci
+
     - name: Run agent
-      run: node ${{ github.action_path }}/dist/index.mjs
+      id: agent
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        INPUT_PROMPT: ${{ inputs.prompt }}
+        INPUT_AGENT: ${{ inputs.agent }}
+        INPUT_TOKEN: ${{ inputs.token }}
+        INPUT_MODEL: ${{ inputs.model }}
+        INPUT_TIMEOUT: ${{ inputs.timeout }}
+      run: node src/run-agent.mjs
+
+    - name: Check for file changes
+      id: changes
+      shell: bash
+      run: |
+        if [[ -n "$(git status --porcelain)" ]]; then
+          echo "files_changed=true" >> "$GITHUB_OUTPUT"
+          echo "📁 Files changed by agent:"
+          git status --short
+        else
+          echo "files_changed=false" >> "$GITHUB_OUTPUT"
+          echo "📁 No files changed by agent"
+        fi
+
+    - name: Create pull request
+      id: create-pr
+      if: steps.changes.outputs.files_changed == 'true' && inputs.create-pr == 'true'
       shell: bash
       env:
-        INPUT_AGENT-NAME: ${{ inputs.agent-name }}
-        INPUT_PROMPT: ${{ inputs.prompt }}
-        INPUT_MODEL: ${{ inputs.model }}
-        INPUT_GITHUB-TOKEN: ${{ inputs.github-token }}
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        BRANCH="${{ inputs.pr-branch }}"
+        DEFAULT_BRANCH="$(git rev-parse --abbrev-ref HEAD)"
+
+        # configure git
+        git config user.name "github-actions[bot]"
+        git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+        # create branch, commit, push
+        git checkout -b "$BRANCH"
+        git add -A
+        git commit -m "${{ inputs.pr-title }}"
+        git push --force origin "$BRANCH"
+
+        # create PR (or update if one already exists)
+        PR_URL=$(gh pr create \
+          --base "$DEFAULT_BRANCH" \
+          --head "$BRANCH" \
+          --title "${{ inputs.pr-title }}" \
+          --body "Automated changes from Copilot agent \`${{ inputs.agent }}\`." \
+          2>/dev/null) || \
+        PR_URL=$(gh pr view "$BRANCH" --json url --jq '.url')
+
+        echo "pr_url=$PR_URL" >> "$GITHUB_OUTPUT"
+        echo "🔗 Pull request: $PR_URL"

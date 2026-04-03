@@ -1,0 +1,39 @@
+# Basic usage — run the repo analyzer on manual dispatch
+name: Analyze Repository
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: "Prompt to send to the agent"
+        required: true
+        default: "Analyze this repository structure, dependencies, and code patterns. Write a report to reports/repo-analysis.md and create GitHub issues for any concerns found. Complete all work before responding."
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run repo analyzer
+        id: analyze
+        uses: snsina-org/call-custom-agents@main
+        with:
+          agent: repo-analyzer-mcp
+          prompt: ${{ github.event.inputs.prompt }}
+          token: ${{ secrets.COPILOT_TOKEN }}
+          model: claude-sonnet-4.6
+          timeout: "600000"
+          create-pr: "true"
+          pr-title: "chore: repo analysis report"
+          pr-branch: "copilot-agent/analysis"
+
+      - name: Print results
+        run: |
+          echo "Response: ${{ steps.analyze.outputs.response }}"
+          echo "Files changed: ${{ steps.analyze.outputs.files-changed }}"
+          echo "PR URL: ${{ steps.analyze.outputs.pr-url }}"

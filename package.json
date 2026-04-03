@@ -1,6 +1,7 @@
 {
   "name": "call-custom-agents",
   "version": "1.0.0",
+  "license": "MIT",
   "description": "Run GitHub Copilot SDK custom agents from the command line",
   "engines": {
     "node": ">=18"
@@ -13,7 +14,8 @@
   },
   "dependencies": {
     "@actions/core": "1.11.1",
-    "@github/copilot-sdk": "0.2.0"
+    "@github/copilot-sdk": "latest",
+    "ncc": "^0.3.6"
   },
   "devDependencies": {
     "@vercel/ncc": "0.38.3"
