@@ -3,7 +3,7 @@
 
 import { test, describe, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { SYSTEM_PROMPT, MCP_SERVERS, buildPrompt, parseInputs } from "../src/run-agent.mjs";
+import { SYSTEM_PROMPT, buildAgentConfig, buildPrompt, parseInputs } from "../src/run-agent.mjs";
 
 describe("SYSTEM_PROMPT", () => {
   test("is a non-empty string", () => {
@@ -20,10 +20,36 @@ describe("SYSTEM_PROMPT", () => {
     assert.ok(SYSTEM_PROMPT.includes("sub-agent"));
     assert.ok(SYSTEM_PROMPT.includes("Do NOT delegate"));
   });
+});
 
-  test("requires edit tool and MCP tools", () => {
-    assert.ok(SYSTEM_PROMPT.includes("`edit` tool"));
-    assert.ok(SYSTEM_PROMPT.includes("github/create_issue"));
+describe("buildAgentConfig()", () => {
+  test("returns config with the given agent name", () => {
+    const cfg = buildAgentConfig("my-agent");
+    assert.equal(cfg.name, "my-agent");
+    assert.equal(cfg.displayName, "my-agent");
+  });
+
+  test("has required fields", () => {
+    const cfg = buildAgentConfig("test-agent");
+    assert.ok(cfg.prompt.length > 0);
+    assert.ok(cfg.description.length > 0);
+    assert.ok(cfg.mcpServers.github);
+    assert.equal(cfg.mcpServers.github.type, "http");
+  });
+
+  test("allows all tools", () => {
+    const cfg = buildAgentConfig("test-agent");
+    assert.equal(cfg.tools, null);
+  });
+
+  test("disables inference", () => {
+    const cfg = buildAgentConfig("test-agent");
+    assert.equal(cfg.infer, false);
+  });
+
+  test("agent prompt forbids delegation", () => {
+    const cfg = buildAgentConfig("test-agent");
+    assert.ok(cfg.prompt.includes("NEVER delegate"));
   });
 });
 
@@ -33,27 +59,17 @@ describe("buildPrompt()", () => {
     assert.ok(result.includes("check for security issues"));
   });
 
-  test("includes analysis steps", () => {
-    const result = buildPrompt("test");
-    assert.ok(result.includes("repo-analysis.md"));
-    assert.ok(result.includes("github/create_issue"));
-    assert.ok(result.includes("`edit` tool"));
-  });
-
   test("forbids sub-agent delegation in prompt", () => {
     const result = buildPrompt("test");
     assert.ok(result.includes("do NOT delegate"));
   });
 });
 
-describe("MCP_SERVERS", () => {
-  test("has github server", () => {
-    assert.ok(MCP_SERVERS.github);
-    assert.equal(MCP_SERVERS.github.type, "http");
-  });
-
-  test("includes issue toolset", () => {
-    assert.ok(MCP_SERVERS.github.headers["X-MCP-Toolsets"].includes("issues"));
+describe("MCP_SERVERS (in agent config)", () => {
+  test("has github server with issue toolset", () => {
+    const cfg = buildAgentConfig("test");
+    assert.ok(cfg.mcpServers.github);
+    assert.ok(cfg.mcpServers.github.headers["X-MCP-Toolsets"].includes("issues"));
   });
 });
 

@@ -1,48 +1,60 @@
 import * as core from "@actions/core";
 import { CopilotClient } from "@github/copilot-sdk";
 
-// ── System instruction for the agent ────────────────────────────────────────
+// ── System instruction appended to the SDK default ──────────────────────────
 export const SYSTEM_PROMPT =
-  "You are a code analysis specialist running in a non-interactive CI pipeline. " +
+  "You are running in a non-interactive CI pipeline. " +
   "CRITICAL RULES:\n" +
-  "- Do NOT delegate work to sub-agents or background tasks.\n" +
-  "- Do NOT use the task or agent tool to dispatch sub-agents.\n" +
-  "- Do ALL work yourself, directly, in this turn.\n" +
+  "- Do NOT delegate work to other sub-agents or background tasks.\n" +
+  "- Do ALL work yourself, directly, using tools in this turn.\n" +
   "- NEVER say work is running in the background.\n" +
   "- NEVER suggest /tasks or ask the user to check back.\n" +
-  "- You MUST use the `edit` tool to write files to disk.\n" +
-  "- You MUST use GitHub MCP tools (github/create_issue) to create issues.\n" +
-  "- Only respond with a summary AFTER all file writes and issue creation are complete.";
+  "- You MUST use tools to write files and create issues — do not just describe what you would do.\n" +
+  "- Only respond with a summary AFTER all tool calls are complete.";
+
+// ── Custom agent config builder ─────────────────────────────────────────────
+export function buildAgentConfig(agentName) {
+  return {
+    name: agentName,
+    displayName: agentName,
+    description: "Custom agent invoked from CI pipeline",
+    tools: null, // all tools available
+    prompt:
+      "You are a code analysis specialist. " +
+      "Do ALL work yourself in this turn — NEVER delegate to sub-agents or background tasks. " +
+      "Use tools to read, analyze, write files, and create GitHub issues. " +
+      "Steps:\n" +
+      "1. Use tools to map the repository structure and read key files\n" +
+      "2. Analyze dependencies and code patterns\n" +
+      "3. Use the execute tool to run `mkdir -p reports`\n" +
+      "4. Use the edit tool to write findings to `reports/repo-analysis.md` with Mermaid diagrams\n" +
+      "5. Use github/list_issues MCP tool to check existing issues\n" +
+      "6. Use github/create_issue MCP tool to create an issue for each NEW finding\n" +
+      "7. Only after ALL steps, respond with a summary of what you did",
+    mcpServers: {
+      github: {
+        type: "http",
+        url: "https://api.githubcopilot.com/mcp/",
+        tools: ["*"],
+        headers: {
+          "X-MCP-Toolsets": "issues,repos,users,pull_requests",
+        },
+      },
+    },
+    infer: false,
+  };
+}
 
 // ── Build the full prompt sent to the model ─────────────────────────────────
 export function buildPrompt(userPrompt) {
   return (
-    "Perform the following analysis on the repository in the current working directory. " +
-    "Do ALL steps yourself — do NOT delegate to sub-agents:\n\n" +
-    "1. Use the `list_directory` and `read_file` tools to map the repository structure\n" +
-    "2. Analyze dependencies (package.json, pom.xml, requirements.txt, go.mod, etc.)\n" +
-    "3. Identify code patterns and CI/CD configuration\n" +
-    "4. Use the `execute` tool to run `mkdir -p reports`\n" +
-    "5. Use the `edit` tool to write a detailed report to `reports/repo-analysis.md` " +
-    "   including Mermaid diagrams for structure, dependencies, and CI/CD pipeline\n" +
-    "6. Use the `github/list_issues` MCP tool to check for existing issues\n" +
-    "7. Use the `github/create_issue` MCP tool to create an issue for each NEW finding\n" +
-    "8. After ALL steps are done, respond with a summary\n\n" +
-    "Additional context from user: " + userPrompt
+    "Analyze the repository in the current working directory. " +
+    "Do ALL steps yourself — do NOT delegate to sub-agents or background tasks. " +
+    "You MUST use tools to write a report file and create GitHub issues. " +
+    "Do not just describe findings — actually write them to disk and create issues.\n\n" +
+    "User instructions: " + userPrompt
   );
 }
-
-// ── MCP server config for GitHub API access ─────────────────────────────────
-export const MCP_SERVERS = {
-  github: {
-    type: "http",
-    url: "https://api.githubcopilot.com/mcp/",
-    tools: ["*"],
-    headers: {
-      "X-MCP-Toolsets": "issues,repos,users,pull_requests",
-    },
-  },
-};
 
 // ── Input parsing (works both in Actions and CLI mode) ──────────────────────
 export function parseInputs(isActions = true) {
@@ -84,9 +96,10 @@ async function run() {
   await client.start();
 
   try {
-    // Use systemMessage + workingDirectory instead of customAgents to avoid
-    // background task dispatch. The system prompt is appended to the SDK's
-    // default instructions so all work runs in the foreground turn.
+    // Create session with the custom agent activated.
+    // The agent config defines its tools, MCP servers, and instructions.
+    // systemMessage appends CI-specific rules (no background tasks, etc.)
+    const agentConfig = buildAgentConfig(agentName);
     const session = await client.createSession({
       model,
       workingDirectory,
@@ -94,7 +107,8 @@ async function run() {
         mode: "append",
         content: SYSTEM_PROMPT,
       },
-      mcpServers: MCP_SERVERS,
+      customAgents: [agentConfig],
+      agent: agentName,
       onPermissionRequest: async () => ({ kind: "approved" }),
     });
 
