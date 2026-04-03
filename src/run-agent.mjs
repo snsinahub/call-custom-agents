@@ -52,8 +52,11 @@ async function run() {
       onPermissionRequest: async () => ({ kind: "approved" }),
     });
 
-    // ── Track events for visibility ────────────────────────────────────
+    // ── Track events for hybrid wait ─────────────────────────────────
     let agentsDiscovered = false;
+    let sessionIdle = false;
+    let hasBackgroundTasks = false;
+    let lastActivityTime = Date.now();
 
     session.on((event) => {
       switch (event.type) {
@@ -64,31 +67,48 @@ async function run() {
         case "session.mcp_servers_loaded":
           core.info("🔌 MCP servers loaded");
           break;
+        case "session.background_tasks_changed":
+          hasBackgroundTasks = true;
+          lastActivityTime = Date.now();
+          core.info(`📡 Event: ${event.type}`);
+          break;
         case "subagent.started":
+          lastActivityTime = Date.now();
           core.info(
             `▶  Sub-agent started: ${event.data.agentDisplayName} ` +
             `(${event.data.toolCallId})`
           );
           break;
         case "subagent.completed":
+          lastActivityTime = Date.now();
           core.info(`✅ Sub-agent completed: ${event.data.agentDisplayName}`);
           break;
         case "subagent.failed":
+          lastActivityTime = Date.now();
           core.error(`❌ Sub-agent failed: ${event.data.agentDisplayName}`);
           core.error(`   Reason: ${event.data.error}`);
           break;
         case "assistant.message":
+          lastActivityTime = Date.now();
           core.info(`💬 Assistant message received (${event.data.content?.length ?? 0} chars)`);
+          break;
+        case "assistant.turn_start":
+          sessionIdle = false;  // new turn = no longer idle
+          lastActivityTime = Date.now();
+          core.info(`📡 Event: ${event.type}`);
           break;
         case "tool.execution_start":
         case "tool.execution_complete":
+          lastActivityTime = Date.now();
           core.info(`📡 Event: ${event.type}`);
           break;
         case "permission.requested":
         case "permission.completed":
+          lastActivityTime = Date.now();
           core.info(`📡 Event: ${event.type}`);
           break;
         case "session.idle":
+          sessionIdle = true;
           core.info("⏸  Session idle");
           break;
         case "session.error":
@@ -143,12 +163,80 @@ async function run() {
     const current = await session.rpc.agent.getCurrent();
     core.info(`📌 Current agent: ${current.agent?.name ?? "none"}`);
 
-    // ── Send prompt and wait for completion ─────────────────────────────
-    // With the agent selected inline, sendAndWait properly waits for
-    // session.idle — which means ALL work is done (no background dispatch).
+    // ── Send prompt using send() — we manage the wait ourselves ──────
+    // sendAndWait() resolves on session.idle, which is wrong when the
+    // agent dispatches background tasks. We use send() + custom wait.
     core.info(`⏳ Sending prompt (timeout: ${timeout}ms)…`);
-    const response = await session.sendAndWait({ prompt: userPrompt }, timeout);
-    const content = response?.data.content ?? "";
+    sessionIdle = false;
+    await session.send({ prompt: userPrompt });
+
+    // ── Hybrid wait: handles both inline and background agents ──────
+    // Phase 1: Wait for initial session.idle (agent processes prompt).
+    // Phase 2: If background tasks were dispatched, keep waiting until
+    //          ALL activity stops for STABILIZATION period.
+    // This handles:
+    //   - repo-analyzer-mcp: works inline, idle = done (Phase 1 only)
+    //   - repo-analyzer: dispatches to background, needs Phase 2
+    //   - DiscoverApp: long inline work, idle fires when truly done
+    const POLL_DELAY = 5000;
+    const STABILIZATION = 30000;  // 30s of no activity after idle = done
+    const deadline = Date.now() + timeout;
+
+    // Phase 1: wait for first session.idle
+    core.info("📍 Phase 1: Waiting for initial session.idle…");
+    while (!sessionIdle && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, POLL_DELAY));
+      const elapsed = Math.round((Date.now() - (deadline - timeout)) / 1000);
+      core.info(`⏳ Waiting for session.idle… (${elapsed}s elapsed)`);
+    }
+
+    if (Date.now() >= deadline) {
+      throw new Error(`Timeout after ${timeout}ms waiting for agent "${agentName}".`);
+    }
+
+    // Phase 2: if background tasks were detected, wait for them
+    if (hasBackgroundTasks) {
+      core.info("📍 Phase 2: Background tasks detected. Waiting for all activity to settle…");
+
+      // Reset — the agent might produce more activity
+      lastActivityTime = Date.now();
+
+      while (Date.now() < deadline) {
+        const idleTime = Date.now() - lastActivityTime;
+
+        // Done when: session is idle AND no activity for STABILIZATION period
+        if (sessionIdle && idleTime >= STABILIZATION) {
+          core.info(`🏁 All activity settled (idle for ${Math.round(idleTime / 1000)}s). Proceeding.`);
+          break;
+        }
+
+        // If session went non-idle (new turn started), reset
+        if (!sessionIdle) {
+          // Session is actively processing — just wait
+        }
+
+        const elapsed = Math.round((Date.now() - (deadline - timeout)) / 1000);
+        core.info(
+          `⏳ Phase 2: [idle: ${sessionIdle}, quiet: ${Math.round(idleTime / 1000)}s/${STABILIZATION / 1000}s, elapsed: ${elapsed}s]`
+        );
+        await new Promise((r) => setTimeout(r, POLL_DELAY));
+      }
+
+      if (Date.now() >= deadline) {
+        throw new Error(`Timeout after ${timeout}ms waiting for background tasks of agent "${agentName}".`);
+      }
+    } else {
+      core.info("📍 No background tasks detected — agent worked inline. Done.");
+    }
+
+    // ── Get the final messages to extract content ──────────────────────
+    const messages = await session.getMessages();
+    const assistantMessages = messages.filter(
+      (m) => m.type === "assistant.message" && m.data?.content
+    );
+    const content = assistantMessages.length > 0
+      ? assistantMessages[assistantMessages.length - 1].data.content
+      : "";
 
     if (!content) {
       core.warning("⚠️  Agent returned empty response.");
