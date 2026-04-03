@@ -1,6 +1,6 @@
 # call-custom-agents
 
-A Node.js CLI tool and [GitHub Action](https://docs.github.com/en/actions) that uses the [GitHub Copilot SDK](https://docs.github.com/en/copilot/how-tos/copilot-sdk/sdk-getting-started) to run a named custom agent with a prompt you supply.
+A [GitHub Action](https://docs.github.com/en/actions) and CLI tool that runs a custom [GitHub Copilot](https://docs.github.com/en/copilot) agent using the [Copilot SDK](https://docs.github.com/en/copilot/how-tos/copilot-sdk/sdk-getting-started). The built-in agent analyzes repositories, generates reports, and creates GitHub issues for findings — all powered by MCP.
 
 ---
 
@@ -9,57 +9,62 @@ A Node.js CLI tool and [GitHub Action](https://docs.github.com/en/actions) that 
 ```
 call-custom-agents/
 ├── src/
-│   └── run-agent.mjs      # Source — agent logic and exports
+│   └── run-agent.mjs        # Source — agent logic and exports
 ├── tests/
-│   └── run-agent.test.mjs # Unit tests (Node built-in test runner)
-├── dist/
-│   └── index.mjs          # Bundled output — called by action.yml
-├── action.yml             # GitHub Action definition
+│   └── run-agent.test.mjs   # Unit tests (Node built-in test runner)
+├── examples/
+│   └── workflows/
+│       ├── basic.yml         # Minimal usage example
+│       ├── on-pr.yml         # Run on pull requests
+│       └── scheduled.yml     # Run on a cron schedule
+├── action.yml                # GitHub Action definition (composite)
 ├── package.json
-└── .gitignore
+└── package-lock.json
 ```
 
 ---
 
 ## Using as a GitHub Action
 
+This is a **composite action** — it installs Node.js 24 and runs `npm ci` at runtime, so there is no pre-bundled `dist/` to maintain.
+
 ### Inputs
 
 | Name | Required | Default | Description |
 |------|----------|---------|-------------|
-| `agent-name` | ✅ | — | Name of the agent to run (`researcher`, `editor`, `security-auditor`) |
 | `prompt` | ✅ | — | The prompt to send to the agent |
-| `model` | ❌ | `gpt-4.1` | The model to use |
-| `github-token` | ❌ | — | GitHub token for authentication. Takes priority over other auth methods. Recommended: `${{ secrets.GITHUB_TOKEN }}` |
+| `agent` | ✅ | `repo-analyzer-mcp` | The custom agent name |
+| `token` | ✅ | — | GitHub PAT with Copilot Requests permission |
+| `model` | ❌ | `gpt-4.1` | AI model to use |
 
 ### Outputs
 
 | Name | Description |
 |------|-------------|
-| `response` | The response returned by the agent |
+| `response` | The response content returned by the agent |
 
-### Example workflow
+### Minimal example
 
 ```yaml
 jobs:
-  audit:
+  analyze:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Run security auditor
-        id: audit
+      - name: Run repo analyzer
+        id: analyze
         uses: snsina-org/call-custom-agents@main
         with:
-          agent-name: security-auditor
-          prompt: 'Are there any SQL injection risks in this codebase?'
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          agent: repo-analyzer-mcp
+          prompt: "Analyze this repository and create issues for any concerns"
+          token: ${{ secrets.COPILOT_TOKEN }}
 
       - name: Print response
-        run: echo "${{ steps.audit.outputs.response }}"
+        run: echo "${{ steps.analyze.outputs.response }}"
 ```
 
-> **Note:** The action runs the pre-built `dist/index.mjs` directly — no `npm install` is needed at runtime.
+See the [`examples/workflows/`](examples/workflows/) directory for more complete examples.
 
 ---
 
@@ -73,15 +78,6 @@ jobs:
 | GitHub Copilot CLI | Must be installed and authenticated |
 | GitHub Copilot subscription | Pro, Pro+, Business, or Enterprise |
 
-Install and authenticate the Copilot CLI first:
-
-```bash
-gh extension install github/gh-copilot
-gh copilot --version  # verify
-```
-
----
-
 ### Installation
 
 ```bash
@@ -89,8 +85,6 @@ git clone https://github.com/snsina-org/call-custom-agents
 cd call-custom-agents
 npm install
 ```
-
----
 
 ### Usage
 
@@ -101,63 +95,14 @@ node src/run-agent.mjs <agent-name> "<prompt>"
 #### Examples
 
 ```bash
-# Ask the researcher agent about authentication
-node src/run-agent.mjs researcher "How does auth work?"
+# Run the default repo analyzer agent
+node src/run-agent.mjs repo-analyzer-mcp "Analyze this repository"
 
-# Ask the editor agent to fix a bug
-node src/run-agent.mjs editor "Fix the null-check in src/utils.js"
+# Use a different model
+MODEL=gpt-4o node src/run-agent.mjs repo-analyzer-mcp "Summarize dependencies"
 
-# Ask the security auditor to review code
-node src/run-agent.mjs security-auditor "Are there any SQL injection risks?"
-```
-
----
-
-## Available Agents
-
-| Agent name | Display name | Description |
-|---|---|---|
-| `researcher` | Research Agent | Explores codebases and answers questions using read-only tools |
-| `editor` | Editor Agent | Makes targeted, minimal code changes |
-| `security-auditor` | Security Auditor | Reviews code for security vulnerabilities and identifies potential issues |
-
----
-
-## Adding Custom Agents
-
-Open `src/run-agent.mjs` and add an entry to the `AGENTS` array:
-
-```js
-{
-  name: "my-agent",           // identifier used in CLI and action inputs
-  displayName: "My Agent",    // human-readable name shown in logs
-  description: "Does stuff",  // short description of what the agent does
-  tools: ["grep", "view"],    // tools the agent is allowed to use
-  prompt: "System prompt…",   // instructions given to the model
-  infer: false,
-}
-```
-
-After adding an agent, rebuild and commit `dist/`:
-
-```bash
-npm run build
-git add dist/
-git commit -m "chore: rebuild dist"
-```
-
-Then call it:
-
-```bash
-node src/run-agent.mjs my-agent "Do the thing"
-```
-
-Or in a workflow:
-
-```yaml
-with:
-  agent-name: my-agent
-  prompt: 'Do the thing'
+# Provide a GitHub token for MCP issue creation
+GITHUB_TOKEN=ghp_xxx node src/run-agent.mjs repo-analyzer-mcp "Find issues and report them"
 ```
 
 ---
@@ -170,28 +115,18 @@ with:
 npm install
 ```
 
-### Build
-
-Bundles `src/run-agent.mjs` into `dist/index.mjs` using [`@vercel/ncc`](https://github.com/vercel/ncc).
-The built file is committed to the repository so the action works without a runtime install step.
-
-```bash
-npm run build
-```
-
 ### Test
 
-Runs unit tests with Node.js's built-in test runner (no extra framework needed).
+Runs unit tests with Node.js's built-in test runner.
 
 ```bash
 npm test
 ```
 
-### npm Scripts
+### npm scripts
 
 | Script | Command | Description |
 |--------|---------|-------------|
 | `npm start` | `node src/run-agent.mjs` | Run the agent CLI |
-| `npm run run-agent` | `node src/run-agent.mjs` | Alias for `npm start` |
-| `npm run build` | `ncc build src/run-agent.mjs -o dist --minify` | Bundle into `dist/` |
+| `npm run build` | `ncc build src/run-agent.mjs -o dist --minify` | Bundle into `dist/` (optional, for local use) |
 | `npm test` | `node --test tests/run-agent.test.mjs` | Run unit tests |

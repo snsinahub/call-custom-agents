@@ -23,5 +23,24 @@ outputs:
     description: "The agent response content"
 
 runs:
-  using: "node24"          # matches node-version in the workflow
-  main: "dist/index.mjs"
+  using: "composite"
+  steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: "24"
+
+    - name: Install dependencies
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      run: npm ci
+
+    - name: Run agent
+      shell: bash
+      working-directory: ${{ github.action_path }}
+      env:
+        INPUT_PROMPT: ${{ inputs.prompt }}
+        INPUT_AGENT: ${{ inputs.agent }}
+        INPUT_TOKEN: ${{ inputs.token }}
+        INPUT_MODEL: ${{ inputs.model }}
+      run: node src/run-agent.mjs

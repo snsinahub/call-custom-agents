@@ -1,0 +1,39 @@
+# Run the repo analyzer on every pull request
+name: PR Analysis
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  analyze-pr:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Analyze PR changes
+        id: analyze
+        uses: snsina-org/call-custom-agents@main
+        with:
+          agent: repo-analyzer-mcp
+          prompt: |
+            Analyze the changes in this pull request.
+            Focus on code quality, potential bugs, and security concerns.
+            Create GitHub issues for any significant findings.
+          token: ${{ secrets.COPILOT_TOKEN }}
+          model: gpt-4.1
+
+      - name: Comment on PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## Repo Analysis Results\n\n${{ steps.analyze.outputs.response }}`
+            })

@@ -1,0 +1,38 @@
+# Run the repo analyzer on a weekly schedule
+name: Scheduled Repository Analysis
+
+on:
+  schedule:
+    # Every Monday at 08:00 UTC
+    - cron: "0 8 * * 1"
+  workflow_dispatch: # Allow manual trigger
+
+jobs:
+  weekly-analysis:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run weekly analysis
+        id: analyze
+        uses: snsina-org/call-custom-agents@main
+        with:
+          agent: repo-analyzer-mcp
+          prompt: |
+            Perform a full repository analysis:
+            1. Map the repository structure
+            2. Analyze dependencies for outdated or vulnerable packages
+            3. Identify code patterns and potential improvements
+            4. Write findings to reports/repo-analysis.md
+            5. Create GitHub issues for each new finding
+          token: ${{ secrets.COPILOT_TOKEN }}
+
+      - name: Upload analysis report
+        uses: actions/upload-artifact@v4
+        with:
+          name: repo-analysis
+          path: reports/
+          if-no-files-found: ignore

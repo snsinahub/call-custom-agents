@@ -3,55 +3,38 @@
 
 import { test, describe, afterEach } from "node:test";
 import assert from "node:assert/strict";
-import { AGENTS, findAgent, parseInputs } from "../src/run-agent.mjs";
+import { buildAgentConfig, parseInputs } from "../src/run-agent.mjs";
 
-describe("AGENTS registry", () => {
-  test("contains exactly the three built-in agents", () => {
-    const names = AGENTS.map((a) => a.name);
-    assert.deepEqual(names, ["researcher", "editor", "security-auditor"]);
+describe("buildAgentConfig()", () => {
+  test("returns config with the given agent name", () => {
+    const cfg = buildAgentConfig("my-agent");
+    assert.equal(cfg.name, "my-agent");
   });
 
-  test("every agent has the required fields", () => {
-    const requiredFields = ["name", "displayName", "description", "tools", "prompt"];
-    for (const agent of AGENTS) {
-      for (const field of requiredFields) {
-        assert.ok(
-          field in agent,
-          `Agent "${agent.name}" is missing field "${field}"`
-        );
-        assert.ok(agent[field] !== undefined && agent[field] !== null && agent[field] !== "", `Agent "${agent.name}" field "${field}" must not be empty`);
-      }
-      assert.ok(Array.isArray(agent.tools), `Agent "${agent.name}" tools must be an array`);
-      assert.ok(agent.tools.length > 0, `Agent "${agent.name}" must have at least one tool`);
+  test("has all required fields", () => {
+    const cfg = buildAgentConfig("test-agent");
+    const requiredFields = ["name", "displayName", "description", "tools", "prompt", "mcpServers"];
+    for (const field of requiredFields) {
+      assert.ok(field in cfg, `Missing field "${field}"`);
+      assert.ok(cfg[field] !== undefined && cfg[field] !== null, `Field "${field}" must not be empty`);
     }
   });
-});
 
-describe("findAgent()", () => {
-  test("returns the researcher agent", () => {
-    const agent = findAgent("researcher");
-    assert.ok(agent, "should return an agent");
-    assert.equal(agent.name, "researcher");
-    assert.equal(agent.displayName, "Research Agent");
+  test("tools is a non-empty array", () => {
+    const cfg = buildAgentConfig("test-agent");
+    assert.ok(Array.isArray(cfg.tools));
+    assert.ok(cfg.tools.length > 0);
   });
 
-  test("returns the editor agent", () => {
-    const agent = findAgent("editor");
-    assert.ok(agent, "should return an agent");
-    assert.equal(agent.name, "editor");
-    assert.equal(agent.displayName, "Editor Agent");
+  test("infer is disabled", () => {
+    const cfg = buildAgentConfig("test-agent");
+    assert.equal(cfg.infer, false);
   });
 
-  test("returns the security-auditor agent", () => {
-    const agent = findAgent("security-auditor");
-    assert.ok(agent, "should return an agent");
-    assert.equal(agent.name, "security-auditor");
-  });
-
-  test("returns null for an unknown agent name", () => {
-    assert.equal(findAgent("unknown-agent"), null);
-    assert.equal(findAgent(""), null);
-    assert.equal(findAgent(undefined), null);
+  test("mcpServers includes github server", () => {
+    const cfg = buildAgentConfig("test-agent");
+    assert.ok(cfg.mcpServers.github);
+    assert.equal(cfg.mcpServers.github.type, "http");
   });
 });
 
@@ -79,6 +62,12 @@ describe("parseInputs() — CLI mode", () => {
     const inputs = parseInputs(false);
     assert.equal(inputs.agentName, "researcher");
     assert.equal(inputs.userPrompt, "How does auth work?");
+  });
+
+  test("joins multiple argv words into prompt", () => {
+    process.argv = ["node", "run-agent.mjs", "editor", "Fix", "the", "bug"];
+    const inputs = parseInputs(false);
+    assert.equal(inputs.userPrompt, "Fix the bug");
   });
 
   test("uses MODEL env var when set", () => {

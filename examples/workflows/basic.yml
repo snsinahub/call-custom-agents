@@ -1,0 +1,27 @@
+# Basic usage — run the repo analyzer on manual dispatch
+name: Analyze Repository
+
+on:
+  workflow_dispatch:
+    inputs:
+      prompt:
+        description: "Prompt to send to the agent"
+        required: true
+        default: "Analyze this repository and summarize your findings"
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run repo analyzer
+        id: analyze
+        uses: snsina-org/call-custom-agents@main
+        with:
+          agent: repo-analyzer-mcp
+          prompt: ${{ github.event.inputs.prompt }}
+          token: ${{ secrets.COPILOT_TOKEN }}
+
+      - name: Print response
+        run: echo "${{ steps.analyze.outputs.response }}"

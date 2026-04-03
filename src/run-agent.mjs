@@ -1,12 +1,61 @@
 import * as core from "@actions/core";
 import { CopilotClient } from "@github/copilot-sdk";
 
+// ── Agent definition builder ────────────────────────────────────────────────
+export function buildAgentConfig(agentName) {
+  return {
+    name: agentName,
+    displayName: "Repo Analyzer MCP",
+    description:
+      "Analyzes a repository for code patterns, dependencies, and structure. " +
+      "Generates a summary report and creates GitHub issues for any concerns found.",
+    tools: ["read", "search", "edit", "execute"],
+    prompt:
+      "You are a code analysis specialist. When assigned a task:\n" +
+      "1. Map the repository structure\n" +
+      "2. Analyze dependencies\n" +
+      "3. Identify code patterns and CI/CD configuration\n" +
+      "4. Run `mkdir -p reports` then write findings to `reports/repo-analysis.md` " +
+      "   including all required Mermaid diagrams\n" +
+      "5. Check for existing GitHub issues (github/list_issues) then create issues " +
+      "   for each new finding (github/create_issue)",
+    mcpServers: {
+      github: {
+        type: "http",
+        url: "https://api.githubcopilot.com/mcp/",
+        tools: ["*"],
+        headers: {
+          "X-MCP-Toolsets": "issues,repos,users,pull_requests",
+        },
+      },
+    },
+    infer: false,
+  };
+}
+
+// ── Input parsing (works both in Actions and CLI mode) ──────────────────────
+export function parseInputs(isActions = true) {
+  if (isActions) {
+    return {
+      userPrompt: core.getInput("prompt", { required: true }),
+      agentName:  core.getInput("agent",  { required: true }),
+      githubToken: core.getInput("token", { required: true }),
+      model:      core.getInput("model",  { required: false }) || "gpt-4.1",
+    };
+  }
+  // CLI mode: node src/run-agent.mjs <agent> <prompt>
+  const [, , agentName, ...rest] = process.argv;
+  return {
+    agentName,
+    userPrompt: rest.join(" "),
+    githubToken: process.env.GITHUB_TOKEN,
+    model:       process.env.MODEL || "gpt-4.1",
+  };
+}
+
 async function run() {
-  // ── Read action inputs ──────────────────────────────────────────────────
-  const prompt    = core.getInput("prompt",  { required: true });
-  const agentName = core.getInput("agent",   { required: true });
-  const token     = core.getInput("token",   { required: true });
-  const model     = core.getInput("model",   { required: false }) || "gpt-4.1";
+  const isActions = !!process.env.GITHUB_ACTIONS;
+  const { userPrompt: prompt, agentName, githubToken: token, model } = parseInputs(isActions);
 
   core.info(`🚀 Starting Copilot agent: ${agentName}`);
   core.info(`📝 Prompt: ${prompt}`);
@@ -19,48 +68,10 @@ async function run() {
   await client.start();
 
   try {
-    // ── Mirror the repo-analyzer-mcp agent definition ───────────────────
     const session = await client.createSession({
       model,
-      customAgents: [
-        {
-          name: agentName,
-          displayName: "Repo Analyzer MCP",
-          description:
-            "Analyzes a repository for code patterns, dependencies, and structure. " +
-            "Generates a summary report and creates GitHub issues for any concerns found.",
-          tools: ["read", "search", "edit", "execute"],
-          prompt:
-            "You are a code analysis specialist. When assigned a task:\n" +
-            "1. Map the repository structure\n" +
-            "2. Analyze dependencies\n" +
-            "3. Identify code patterns and CI/CD configuration\n" +
-            "4. Run `mkdir -p reports` then write findings to `reports/repo-analysis.md` " +
-            "   including all required Mermaid diagrams\n" +
-            "5. Check for existing GitHub issues (github/list_issues) then create issues " +
-            "   for each new finding (github/create_issue)",
-
-          // GitHub MCP server — write access for issue creation
-          mcpServers: {
-            github: {
-              type: "http",
-              url: "https://api.githubcopilot.com/mcp/",
-              tools: ["*"],
-              headers: {
-                "X-MCP-Toolsets": "issues,repos,users,pull_requests",
-              },
-            },
-          },
-
-          // Disable auto-inference — always explicitly selected via `agent:`
-          infer: false,
-        },
-      ],
-
-      // Pre-select this agent from the first prompt
+      customAgents: [buildAgentConfig(agentName)],
       agent: agentName,
-
-      // Auto-approve all tool use — required for non-interactive CI execution
       onPermissionRequest: async () => ({ kind: "approved" }),
     });
 
