@@ -21,7 +21,7 @@ jobs:
 
       - name: Run repo analyzer
         id: analyze
-        uses: snsina-org/call-custom-agents@main
+        uses: snsinahub/call-custom-agents@main
         with:
           agent: repo-analyzer-mcp
           prompt: ${{ github.event.inputs.prompt }}
