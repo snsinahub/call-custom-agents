@@ -142,7 +142,20 @@ async function run() {
       const lower = content.toLowerCase();
       const isDeferred = POLL_PHRASES.some((p) => lower.includes(p));
 
-      if (!isDeferred || subagentDone) break;
+      if (!isDeferred) break;
+
+      // If the SDK tells us subagent is done, ask for results immediately
+      if (subagentDone) {
+        core.info("✅ Sub-agent completed (via SDK event). Requesting final results…");
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) break;
+        response = await session.sendAndWait(
+          { prompt: "The background task has completed. Show me the full results and any files that were created or modified." },
+          remaining
+        );
+        content = response?.data.content ?? "";
+        break;
+      }
 
       polls++;
       core.info(`🔄 Agent deferred to background (poll ${polls}/${MAX_POLLS}). Waiting ${POLL_DELAY / 1000}s…`);
