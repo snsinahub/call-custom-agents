@@ -36,12 +36,18 @@ This is a **composite action** — it installs Node.js 24 and runs `npm ci` at r
 | `agent` | ✅ | `repo-analyzer-mcp` | The custom agent name |
 | `token` | ✅ | — | GitHub PAT with Copilot Requests permission |
 | `model` | ❌ | `gpt-4.1` | AI model to use |
+| `timeout` | ❌ | `600000` | Timeout in milliseconds to wait for agent completion |
+| `create-pr` | ❌ | `true` | Create a pull request if the agent changes any files |
+| `pr-title` | ❌ | `chore: apply changes from Copilot agent` | Title for the auto-created PR |
+| `pr-branch` | ❌ | `copilot-agent/auto` | Branch name for the auto-created PR |
 
 ### Outputs
 
 | Name | Description |
 |------|-------------|
 | `response` | The response content returned by the agent |
+| `files-changed` | Whether the agent changed any files (`true`/`false`) |
+| `pr-url` | URL of the created pull request (empty if none) |
 
 ### Minimal example
 
@@ -49,6 +55,10 @@ This is a **composite action** — it installs Node.js 24 and runs `npm ci` at r
 jobs:
   analyze:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
     steps:
       - uses: actions/checkout@v4
 
@@ -60,9 +70,14 @@ jobs:
           prompt: "Analyze this repository and create issues for any concerns"
           token: ${{ secrets.COPILOT_TOKEN }}
 
-      - name: Print response
-        run: echo "${{ steps.analyze.outputs.response }}"
+      - name: Print results
+        run: |
+          echo "Response: ${{ steps.analyze.outputs.response }}"
+          echo "Files changed: ${{ steps.analyze.outputs.files-changed }}"
+          echo "PR: ${{ steps.analyze.outputs.pr-url }}"
 ```
+
+> **Note:** The workflow needs `contents: write` and `pull-requests: write` permissions for the action to create branches and PRs.
 
 See the [`examples/workflows/`](examples/workflows/) directory for more complete examples.
 

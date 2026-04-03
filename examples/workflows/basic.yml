@@ -12,6 +12,10 @@ on:
 jobs:
   analyze:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
     steps:
       - uses: actions/checkout@v4
 
@@ -23,6 +27,12 @@ jobs:
           prompt: ${{ github.event.inputs.prompt }}
           token: ${{ secrets.COPILOT_TOKEN }}
           timeout: "600000"
+          create-pr: "true"
+          pr-title: "chore: repo analysis report"
+          pr-branch: "copilot-agent/analysis"
 
-      - name: Print response
-        run: echo "${{ steps.analyze.outputs.response }}"
+      - name: Print results
+        run: |
+          echo "Response: ${{ steps.analyze.outputs.response }}"
+          echo "Files changed: ${{ steps.analyze.outputs.files-changed }}"
+          echo "PR URL: ${{ steps.analyze.outputs.pr-url }}"

@@ -11,7 +11,8 @@ jobs:
   weekly-analysis:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
+      pull-requests: write
       issues: write
     steps:
       - uses: actions/checkout@v4
@@ -31,6 +32,9 @@ jobs:
             6. Respond with a summary of everything you did
           token: ${{ secrets.COPILOT_TOKEN }}
           timeout: "600000"
+          create-pr: "true"
+          pr-title: "chore: weekly repo analysis"
+          pr-branch: "copilot-agent/weekly-analysis"
 
       - name: Upload analysis report
         uses: actions/upload-artifact@v4
@@ -38,3 +42,9 @@ jobs:
           name: repo-analysis
           path: reports/
           if-no-files-found: ignore
+
+      - name: Summary
+        run: |
+          echo "### Weekly Analysis" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Files changed: ${{ steps.analyze.outputs.files-changed }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- PR: ${{ steps.analyze.outputs.pr-url }}" >> "$GITHUB_STEP_SUMMARY"
