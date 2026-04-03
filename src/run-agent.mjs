@@ -51,15 +51,21 @@ async function run() {
   await client.start();
 
   try {
-    // Create session pointing at the checked-out repo.
-    // The CLI discovers custom agents from .agent.md / .agent.yaml files
-    // (org-level agents from .github-private/agents/, repo-level from
-    // .github/agents/). Remote agents are selected by prefixing the
-    // prompt with @agent-name (the `agent` config param only works for
-    // inline customAgents, not remotely discovered ones).
+    // Create session with the agent activated inline.
+    // Using customAgents + agent makes the CLI run it in the foreground
+    // (inline in the main session) rather than dispatching it as a
+    // background sub-agent. The minimal prompt defers to the remote
+    // agent's own .agent.md definition which the CLI merges in.
     const session = await client.createSession({
       model,
       workingDirectory,
+      customAgents: [{
+        name: agentName,
+        prompt: "Follow the instructions from your agent definition. " +
+                "Complete ALL work in this turn. Do NOT defer to background tasks.",
+        infer: false,
+      }],
+      agent: agentName,
       systemMessage: {
         mode: "append",
         content: SYSTEM_PROMPT,
@@ -139,10 +145,9 @@ async function run() {
     // We check after sendAndWait, but the event handler above already
     // captured discoveredAgents by then.
 
-    // ── Send the prompt, addressing the agent with @mention ─────────────
-    const fullPrompt = `@${agentName} ${userPrompt}`;
-    core.info(`⏳ Sending prompt to @${agentName} (timeout: ${timeout}ms)…`);
-    const response = await session.sendAndWait({ prompt: fullPrompt }, timeout);
+    // ── Send the prompt directly (agent already active via `agent:`) ────
+    core.info(`⏳ Sending prompt to ${agentName} (timeout: ${timeout}ms)…`);
+    const response = await session.sendAndWait({ prompt: userPrompt }, timeout);
     const content  = response?.data.content ?? "";
 
     // ── Validate the correct agent actually ran ─────────────────────────
@@ -180,12 +185,14 @@ async function run() {
     // Detect "running in background" non-answers
     const lowerContent = content.toLowerCase();
     if (lowerContent.includes("running in the background") ||
+        lowerContent.includes("is now analyzing") ||
         lowerContent.includes("will update you") ||
-        lowerContent.includes("check its status")) {
+        lowerContent.includes("will notify you") ||
+        lowerContent.includes("check its status") ||
+        lowerContent.includes("analysis is complete")) {
       throw new Error(
-        `Agent "${agentName}" did not complete its work — it deferred to a background task. ` +
-        `This likely means the agent was not properly discovered. ` +
-        `Ensure the agent file exists and the token has the required permissions.`
+        `Agent "${agentName}" deferred work to a background task instead of completing inline. ` +
+        `Response: "${content.substring(0, 200)}"`
       );
     }
 
