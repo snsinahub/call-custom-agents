@@ -64,7 +64,7 @@ jobs:
 
       - name: Run repo analyzer
         id: analyze
-        uses: snsinahub/call-custom-agents@main
+        uses: snsinahub/call-custom-agents@v1.0.0
         with:
           agent: repo-analyzer-mcp
           prompt: "Analyze this repository and create issues for any concerns"
