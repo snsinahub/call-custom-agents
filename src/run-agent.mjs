@@ -209,6 +209,29 @@ async function run() {
 
       // Check if the agent is asking for confirmation / pausing
       const lower = lastMsg.toLowerCase();
+
+      // First: check if agent says work is STILL IN PROGRESS — never
+      // exit or auto-continue when the agent says it's still working
+      const isStillWorking =
+        lower.includes("still running") ||
+        lower.includes("still in progress") ||
+        lower.includes("analysis is still") ||
+        lower.includes("not yet complete") ||
+        lower.includes("hasn't completed") ||
+        lower.includes("has not completed") ||
+        lower.includes("will complete without interruption") ||
+        lower.includes("no further input is required");
+
+      if (isStillWorking) {
+        // Agent is working — reset activity timer and keep waiting
+        core.info("🔄 Agent says work is still in progress. Continuing to wait…");
+        lastActivityTime = Date.now();
+        sessionIdle = false; // force re-wait for next idle
+        await new Promise((r) => setTimeout(r, POLL_DELAY));
+        continue;
+      }
+
+      // Second: check if asking for confirmation
       const isAskingToContinue =
         lower.includes("let me know") ||
         lower.includes("shall i") ||
@@ -216,12 +239,8 @@ async function run() {
         lower.includes("do you want") ||
         lower.includes("want me to") ||
         lower.includes("proceed with") ||
-        lower.includes("ready to") ||
         lower.includes("if you want to review") ||
-        lower.includes("if you'd like") ||
-        lower.includes("next steps") ||
-        lower.includes("i will now") ||
-        lower.includes("i'll now");
+        lower.includes("if you'd like");
 
       if (isAskingToContinue && continueCount < MAX_CONTINUES) {
         continueCount++;
@@ -241,9 +260,25 @@ async function run() {
           core.info(`⏳ Background tasks settling… (${Math.round(idleTime / 1000)}s/${STABILIZATION / 1000}s)`);
           await new Promise((r) => setTimeout(r, POLL_DELAY));
 
-          // Check if new activity started during wait
-          if (!sessionIdle) continue; // session went active again
-          continue; // recheck stabilization
+          // Re-fetch last message to check if agent reported completion
+          const freshMsgs = await session.getMessages();
+          const freshAssistant = freshMsgs.filter(
+            (m) => m.type === "assistant.message" && m.data?.content
+          );
+          const freshMsg = freshAssistant.length > 0
+            ? freshAssistant[freshAssistant.length - 1].data.content.toLowerCase()
+            : "";
+
+          // If still says "in progress" — don't settle, keep waiting
+          if (freshMsg.includes("still running") ||
+              freshMsg.includes("still in progress") ||
+              freshMsg.includes("analysis is still")) {
+            core.info("🔄 Agent still reports work in progress. Resetting stabilization…");
+            lastActivityTime = Date.now();
+          }
+
+          if (!sessionIdle) continue;
+          continue;
         }
         core.info(`🏁 Background tasks settled (idle for ${Math.round(idleTime / 1000)}s).`);
       }
