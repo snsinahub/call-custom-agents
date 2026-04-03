@@ -52,26 +52,27 @@ async function run() {
 
   try {
     // Register the agent as an inline customAgent with the same name as
-    // the remote org agent. The CLI merges the remote definition (from
-    // .github-private/agents/) with this inline config. Using `agent:`
-    // pre-selects it so work runs inline, not as a background sub-agent.
-    // Per SDK docs: name + prompt are required; sendAndWait waits for
-    // session.idle which fires after all sub-agent work completes.
+    // Register inline agent with same name as remote org agent. The CLI
+    // merges the remote definition (MCP servers, tools) when names match.
+    // IMPORTANT: customAgents[].prompt is a SYSTEM prompt, NOT the user
+    // message. It must contain actionable instructions so the model works
+    // inline instead of dispatching to a background sub-agent.
     const session = await client.createSession({
       model,
       workingDirectory,
       customAgents: [{
         name: agentName,
         description: `Custom agent "${agentName}" invoked from CI`,
-        prompt: userPrompt,
+        prompt:
+          "You are running in a non-interactive CI pipeline. " +
+          "Execute the task given by the user yourself, directly, using your available tools. " +
+          "Do NOT delegate to other agents or background tasks. " +
+          "Do NOT say work is running in background. " +
+          "Complete ALL work in this turn, then respond with a summary.",
         tools: null,
         infer: false,
       }],
       agent: agentName,
-      systemMessage: {
-        mode: "append",
-        content: SYSTEM_PROMPT,
-      },
       onPermissionRequest: async () => ({ kind: "approved" }),
     });
 
