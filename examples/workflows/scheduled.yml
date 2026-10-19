@@ -19,7 +19,7 @@ jobs:
 
       - name: Run weekly analysis
         id: analyze
-        uses: snsina-org/call-custom-agents@main
+        uses: snsinahub/call-custom-agents@v1.0.0
         with:
           agent: repo-analyzer-mcp
           prompt: |
